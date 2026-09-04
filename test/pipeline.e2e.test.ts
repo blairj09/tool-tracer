@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import type { CV } from '../src/cv/loadCv'
 import { alignPolygons, bbox } from '../src/pipeline/align'
 import { makeImageData } from '../src/pipeline/image'
+import { manualRectify } from '../src/pipeline/manualScale'
 import { detectMarkers, MarkerDetectionError } from '../src/pipeline/markers'
 import { offsetPolygon } from '../src/pipeline/offset'
 import { extractOutline } from '../src/pipeline/outline'
@@ -108,5 +109,31 @@ describe('pipeline end-to-end (synthetic photo)', () => {
     expect(result.svg).toContain('mm"')
     expect(result.svg).toContain('<g id="outline">')
     expect(result.svg).toContain('<g id="clearance">')
+  })
+
+  it('manual mode: ignores a border-touching background contour and picks the tool instead', () => {
+    const { imageData } = buildSyntheticPhoto(cv)
+
+    // Manual (marker-less) fallback: scale the whole photo so that two
+    // user-picked points 400px apart on the raw image correspond to a
+    // made-up 100mm reference distance. No perspective correction and no
+    // working-area mask is applied in this mode.
+    const rectified = manualRectify(cv, imageData, { x: 0, y: 0 }, { x: 400, y: 0 }, 100, PAPER_SIZE)
+    console.log('[e2e] manual mode canvas size (px):', rectified.image.width, rectified.image.height)
+
+    const outline = extractOutline(cv, rectified, DEFAULT_OUTLINE_PARAMS)
+    console.log('[e2e] manual mode chosen outline bbox (mm):', outline.bbox, 'areaMm2:', outline.areaMm2)
+
+    const canvasWMm = rectified.image.width / rectified.pxPerMm
+    const canvasHMm = rectified.image.height / rectified.pxPerMm
+    const imageAreaMm2 = canvasWMm * canvasHMm
+
+    // The chosen contour must be an interior blob (the rectangle or the
+    // circle), not the background region that touches the image border.
+    expect(outline.bbox.x).toBeGreaterThan(0)
+    expect(outline.bbox.y).toBeGreaterThan(0)
+    expect(outline.bbox.x + outline.bbox.w).toBeLessThan(canvasWMm)
+    expect(outline.bbox.y + outline.bbox.h).toBeLessThan(canvasHMm)
+    expect(outline.areaMm2).toBeLessThan(imageAreaMm2 * 0.1)
   })
 })

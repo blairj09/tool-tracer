@@ -121,13 +121,23 @@ export function extractOutline(cv: CV, rectified: Rectified, params: OutlinePara
     const contourInput = track(binary.clone())
     const contours = track(new cv.MatVector())
     const hierarchy = track(new cv.Mat())
-    cv.findContours(contourInput, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+    // RETR_CCOMP (not RETR_EXTERNAL): in manual mode the background can be
+    // darker than the paper, which makes the tool an "island" nested two
+    // levels deep (background -> paper hole -> tool). RETR_EXTERNAL only
+    // ever returns the outermost contour (the background) and would never
+    // surface the tool at all. Under CCOMP, any contour nested inside a
+    // hole is reported back at the top level (parent -1), alongside true
+    // top-level contours and unlike hole boundaries (parent >= 0) — so we
+    // filter to parent === -1 below to keep tool/background shapes and drop
+    // hole outlines (e.g. the paper's own boundary).
+    cv.findContours(contourInput, contours, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_NONE)
 
     const minAreaPx = params.minAreaMm2 * pxPerMm * pxPerMm
     const candidates: Mat[] = []
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i)
-      if (cv.contourArea(c) >= minAreaPx) {
+      const isHole = hierarchy.data32S[i * 4 + 3] !== -1
+      if (!isHole && cv.contourArea(c) >= minAreaPx) {
         candidates.push(c)
       } else {
         c.delete()
@@ -154,7 +164,20 @@ export function extractOutline(cv: CV, rectified: Rectified, params: OutlinePara
       }
       chosen = containing ?? nearest
     } else {
-      chosen = candidates.reduce((best, c) => (cv.contourArea(c) > cv.contourArea(best) ? c : best))
+      let pool = candidates
+      if (rectified.mode === 'manual') {
+        // No perspective mask is applied in manual mode, so on photos whose
+        // background is darker than the paper, the largest contour can be
+        // the background region touching the image border. Prefer interior
+        // contours; fall back to the full set if none qualify.
+        const interior = candidates.filter((c) => {
+          const r = cv.boundingRect(c)
+          const touchesBorder = r.x <= 0 || r.y <= 0 || r.x + r.width >= binary.cols || r.y + r.height >= binary.rows
+          return !touchesBorder
+        })
+        if (interior.length > 0) pool = interior
+      }
+      chosen = pool.reduce((best, c) => (cv.contourArea(c) > cv.contourArea(best) ? c : best))
     }
 
     const approx = track(new cv.Mat())
