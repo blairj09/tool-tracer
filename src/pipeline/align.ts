@@ -1,7 +1,9 @@
 // Pure geometry helpers: bounding box, polygon area, convex hull, and a
 // hand-rolled rotating-calipers minimum-area-rectangle used to auto-rotate
-// the outline so its long axis is horizontal before export.
-import type { Polygon, Pt } from './types'
+// the outline so its long axis is horizontal before export. Also the
+// polygon transform helpers shared by run.ts (exportTools) and the UI's
+// arrange canvas.
+import type { Polygon, Pt, Transform } from './types'
 
 function cross(o: Pt, a: Pt, b: Pt): number {
   return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
@@ -78,12 +80,6 @@ function minAreaRect(hull: Polygon): MinRect {
   return best
 }
 
-function rotatePolygon(poly: Polygon, theta: number): Polygon {
-  const c = Math.cos(theta)
-  const s = Math.sin(theta)
-  return poly.map((p) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c }))
-}
-
 export function bbox(polys: Polygon[]): { x: number; y: number; w: number; h: number } {
   let minX = Infinity
   let minY = Infinity
@@ -122,12 +118,9 @@ export function alignPolygons(polys: Polygon[], opts: { autoAlign: boolean; marg
   let result = polys.map((poly) => poly.map((p) => ({ ...p })))
 
   if (opts.autoAlign && result[0] && result[0].length >= 3) {
-    const hull = convexHull(result[0])
-    if (hull.length >= 2) {
-      const rect = minAreaRect(hull)
-      let angle = rect.angle
-      if (rect.height > rect.width) angle += Math.PI / 2
-      result = result.map((poly) => rotatePolygon(poly, -angle))
+    const angleDeg = autoAlignAngleDeg(result[0])
+    if (angleDeg !== 0) {
+      result = result.map((poly) => applyTransform(poly, { dx: 0, dy: 0, angleDeg }, { x: 0, y: 0 }))
     }
   }
 
@@ -137,4 +130,111 @@ export function alignPolygons(polys: Polygon[], opts: { autoAlign: boolean; marg
   result = result.map((poly) => poly.map((p) => ({ x: p.x + dx, y: p.y + dy })))
 
   return result
+}
+
+/** Fold an angle in degrees into (-90, 90], the domain autoAlignAngleDeg reports in. */
+function normalizeAngle90(deg: number): number {
+  let d = deg % 180
+  if (d <= -90) d += 180
+  if (d > 90) d -= 180
+  return d
+}
+
+/**
+ * The rotation (deg) to apply — via {@link applyTransform}, same sign
+ * convention — so the polygon's min-area-rectangle long side becomes
+ * horizontal. Normalised to (-90, 90]. Returns 0 for degenerate polygons
+ * (fewer than 3 points, or a hull too small to have a defined long axis).
+ */
+export function autoAlignAngleDeg(polygon: Polygon): number {
+  if (polygon.length < 3) return 0
+  const hull = convexHull(polygon)
+  if (hull.length < 2) return 0
+  const rect = minAreaRect(hull)
+  let angle = rect.angle
+  if (rect.height > rect.width) angle += Math.PI / 2
+  const deg = (-angle * 180) / Math.PI
+  return normalizeAngle90(deg)
+}
+
+/**
+ * Rotate `pt` about `pivot` by `deg` degrees. Y is down (screen/SVG
+ * convention), so a positive angle rotates clockwise on screen.
+ */
+export function rotateAbout(pt: Pt, pivot: Pt, deg: number): Pt {
+  const theta = (deg * Math.PI) / 180
+  const c = Math.cos(theta)
+  const s = Math.sin(theta)
+  const dx = pt.x - pivot.x
+  const dy = pt.y - pivot.y
+  return {
+    x: pivot.x + dx * c - dy * s,
+    y: pivot.y + dx * s + dy * c,
+  }
+}
+
+/**
+ * Apply `t` to `polygon`: rotate every vertex by `t.angleDeg` about `pivot`
+ * (Y down, positive = clockwise on screen — see {@link rotateAbout}), then
+ * translate by `(t.dx, t.dy)`.
+ */
+export function applyTransform(polygon: Polygon, t: Transform, pivot: Pt): Polygon {
+  return polygon.map((p) => {
+    const r = rotateAbout(p, pivot, t.angleDeg)
+    return { x: r.x + t.dx, y: r.y + t.dy }
+  })
+}
+
+/**
+ * Area centroid of a (possibly non-convex, non-self-intersecting) polygon
+ * via the shoelace formula. Falls back to the plain vertex mean for
+ * degenerate/collinear input (near-zero signed area).
+ */
+export function centroid(polygon: Polygon): Pt {
+  const n = polygon.length
+  if (n === 0) return { x: 0, y: 0 }
+  if (n === 1) return { ...polygon[0] }
+
+  let signedArea = 0
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < n; i++) {
+    const a = polygon[i]
+    const b = polygon[(i + 1) % n]
+    const cross = a.x * b.y - b.x * a.y
+    signedArea += cross
+    cx += (a.x + b.x) * cross
+    cy += (a.y + b.y) * cross
+  }
+  signedArea /= 2
+
+  if (Math.abs(signedArea) < 1e-9) {
+    let sx = 0
+    let sy = 0
+    for (const p of polygon) {
+      sx += p.x
+      sy += p.y
+    }
+    return { x: sx / n, y: sy / n }
+  }
+
+  return { x: cx / (6 * signedArea), y: cy / (6 * signedArea) }
+}
+
+/**
+ * Ray-casting point-in-polygon test (even-odd rule). Used for hit-testing
+ * clicks against tool/component outlines.
+ */
+export function pointInPolygon(pt: Pt, polygon: Polygon): boolean {
+  let inside = false
+  const n = polygon.length
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i].x
+    const yi = polygon[i].y
+    const xj = polygon[j].x
+    const yj = polygon[j].y
+    const intersects = yi > pt.y !== yj > pt.y && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi
+    if (intersects) inside = !inside
+  }
+  return inside
 }

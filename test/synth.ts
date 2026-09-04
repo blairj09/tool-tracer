@@ -4,6 +4,7 @@
 import type { CV } from '../src/cv/loadCv'
 import { makeImageData } from '../src/pipeline/image'
 import { markerLayouts, PAPER, workingArea } from '../src/template/layout'
+import type { Pt } from '../src/template/layout'
 
 export const PAPER_SIZE = 'letter' as const
 export const SYNTH_PX_PER_MM = 6 // resolution of the synthetic "printed page" before photographing
@@ -12,11 +13,26 @@ export const RECT_H_MM = 30
 export const RECT_ANGLE_DEG = 17
 export const CIRCLE_DIAMETER_MM = 12
 
+// A grey bar drawn axis-aligned (not rotated with the rectangle) inside the
+// dark rectangle, used to exercise `extractComponent`. Intensity ~110 vs the
+// rectangle's ~20, so it's lighter than its surroundings.
+export const BAR_W_MM = 20
+export const BAR_H_MM = 8
+export const BAR_INTENSITY = 110
+
 export interface SyntheticPhoto {
   imageData: ImageData
+  /** Centre of the grey bar (mm, page/working-area frame), when drawn. */
+  barCenterMm?: Pt
 }
 
-export function buildSyntheticPhoto(cv: CV): SyntheticPhoto {
+export interface BuildSyntheticPhotoOptions {
+  /** Draw the grey bar inside the rectangle. Default true. */
+  bar?: boolean
+}
+
+export function buildSyntheticPhoto(cv: CV, opts: BuildSyntheticPhotoOptions = {}): SyntheticPhoto {
+  const withBar = opts.bar ?? true
   const pageW = Math.round(PAPER[PAPER_SIZE].w * SYNTH_PX_PER_MM)
   const pageH = Math.round(PAPER[PAPER_SIZE].h * SYNTH_PX_PER_MM)
 
@@ -62,6 +78,23 @@ export function buildSyntheticPhoto(cv: CV): SyntheticPhoto {
   cv.fillPoly(page, rectMv, new cv.Scalar(20))
   rectPts.delete()
   rectMv.delete()
+
+  // A grey bar, axis-aligned (not rotated with the rectangle), centred
+  // inside it: exactly 20.0 x 8.0 mm, intensity ~110 (lighter than the
+  // rectangle's ~20). Drawn after the rectangle so it overwrites part of it.
+  let barCenterMm: Pt | undefined
+  if (withBar) {
+    barCenterMm = { x: rectCenter.x, y: rectCenter.y }
+    const barRect = new cv.Rect(
+      Math.round((barCenterMm.x - BAR_W_MM / 2) * SYNTH_PX_PER_MM),
+      Math.round((barCenterMm.y - BAR_H_MM / 2) * SYNTH_PX_PER_MM),
+      Math.round(BAR_W_MM * SYNTH_PX_PER_MM),
+      Math.round(BAR_H_MM * SYNTH_PX_PER_MM),
+    )
+    const barRoi = page.roi(barRect)
+    barRoi.setTo(new cv.Scalar(BAR_INTENSITY))
+    barRoi.delete()
+  }
 
   // A small dark circle elsewhere in the working area: 12.0 mm diameter.
   const circleCenterMm = { x: area.x + area.w * 0.25, y: area.y + area.h * 0.75 }
@@ -120,5 +153,5 @@ export function buildSyntheticPhoto(cv: CV): SyntheticPhoto {
   const imageData = makeImageData(blurred.cols, blurred.rows, new Uint8ClampedArray(blurred.data))
   blurred.delete()
 
-  return { imageData }
+  return { imageData, barCenterMm }
 }

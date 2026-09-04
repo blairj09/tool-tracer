@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { alignPolygons, bbox, polygonArea } from '../src/pipeline/align'
+import { alignPolygons, applyTransform, autoAlignAngleDeg, bbox, centroid, pointInPolygon, polygonArea, rotateAbout } from '../src/pipeline/align'
 import type { Polygon, Pt } from '../src/pipeline/types'
 
 function rotatedRect(cx: number, cy: number, w: number, h: number, angleDeg: number): Polygon {
@@ -108,5 +108,111 @@ describe('alignPolygons', () => {
     const poly = rotatedRect(50, 50, 80, 30, 25)
     const [aligned] = alignPolygons([poly], { autoAlign: true, marginMm: 5 })
     expect(polygonArea(aligned)).toBeCloseTo(80 * 30, 3)
+  })
+})
+
+describe('applyTransform', () => {
+  it('round-trips: rotate +theta then -theta about the same pivot returns the input', () => {
+    const poly = rotatedRect(50, 50, 80, 30, 25)
+    const pivot = { x: 12, y: -7 }
+    const rotated = applyTransform(poly, { dx: 0, dy: 0, angleDeg: 37 }, pivot)
+    const back = applyTransform(rotated, { dx: 0, dy: 0, angleDeg: -37 }, pivot)
+    for (let i = 0; i < poly.length; i++) {
+      expect(back[i].x).toBeCloseTo(poly[i].x, 9)
+      expect(back[i].y).toBeCloseTo(poly[i].y, 9)
+    }
+  })
+
+  it('translates by (dx, dy) after rotating', () => {
+    const poly: Polygon = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ]
+    const result = applyTransform(poly, { dx: 5, dy: -3, angleDeg: 0 }, { x: 0, y: 0 })
+    expect(result).toEqual([
+      { x: 5, y: -3 },
+      { x: 15, y: -3 },
+      { x: 15, y: 7 },
+      { x: 5, y: 7 },
+    ])
+  })
+
+  it('rotating a point 90 degrees clockwise on screen (y down) about the origin', () => {
+    // (1, 0) rotated +90deg about the origin should land at (0, 1) since
+    // positive angle is clockwise on screen with y pointing down.
+    const p = rotateAbout({ x: 1, y: 0 }, { x: 0, y: 0 }, 90)
+    expect(p.x).toBeCloseTo(0, 9)
+    expect(p.y).toBeCloseTo(1, 9)
+  })
+})
+
+describe('autoAlignAngleDeg', () => {
+  it('returns approximately -17deg for a rectangle rotated 17deg', () => {
+    const poly = rotatedRect(50, 50, 80, 30, 17)
+    const angle = autoAlignAngleDeg(poly)
+    // Normalised to (-90, 90], so compare mod 180.
+    const folded = ((angle + 90) % 180 + 180) % 180 - 90
+    expect(folded).toBeCloseTo(-17, 1)
+  })
+
+  it('is in (-90, 90]', () => {
+    for (const deg of [5, 45, 89, 91, 135, 179, -5, -91, -135]) {
+      const poly = rotatedRect(0, 0, 80, 30, deg)
+      const angle = autoAlignAngleDeg(poly)
+      expect(angle).toBeGreaterThan(-90)
+      expect(angle).toBeLessThanOrEqual(90)
+    }
+  })
+
+  it('applying the angle makes the long side horizontal', () => {
+    const poly = rotatedRect(20, 20, 80, 30, 63)
+    const angle = autoAlignAngleDeg(poly)
+    const aligned = applyTransform(poly, { dx: 0, dy: 0, angleDeg: angle }, { x: 20, y: 20 })
+    const box = bbox([aligned])
+    expect(box.w).toBeGreaterThan(box.h)
+    expect(box.w).toBeCloseTo(80, 2)
+    expect(box.h).toBeCloseTo(30, 2)
+  })
+})
+
+describe('centroid', () => {
+  it('is the centre of a square', () => {
+    const square: Polygon = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ]
+    const c = centroid(square)
+    expect(c.x).toBeCloseTo(5, 9)
+    expect(c.y).toBeCloseTo(5, 9)
+  })
+
+  it('moves by exactly the applied translation', () => {
+    const poly = rotatedRect(50, 50, 80, 30, 40)
+    const c0 = centroid(poly)
+    const moved = applyTransform(poly, { dx: 12, dy: -4, angleDeg: 0 }, c0)
+    const c1 = centroid(moved)
+    expect(c1.x - c0.x).toBeCloseTo(12, 9)
+    expect(c1.y - c0.y).toBeCloseTo(-4, 9)
+  })
+})
+
+describe('pointInPolygon', () => {
+  const square: Polygon = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ]
+
+  it('is true for a point inside', () => {
+    expect(pointInPolygon({ x: 5, y: 5 }, square)).toBe(true)
+  })
+
+  it('is false for a point outside', () => {
+    expect(pointInPolygon({ x: 15, y: 5 }, square)).toBe(false)
   })
 })
