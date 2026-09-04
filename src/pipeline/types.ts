@@ -20,8 +20,10 @@ export interface Rectified {
   image: ImageData
   paper: PaperSize
   pxPerMm: number
-  reprojErrorPx: number // mean reprojection error of the 16 marker corners
-  markers: DetectedMarker[]
+  reprojErrorPx: number // mean reprojection error of the 16 marker corners (0 in manual mode)
+  markers: DetectedMarker[] // empty in manual mode
+  /** 'markers' = homography from the template; 'manual' = uniform scale from two user points, no perspective correction */
+  mode: 'markers' | 'manual'
 }
 
 export interface OutlineParams {

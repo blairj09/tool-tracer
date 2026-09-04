@@ -7,17 +7,26 @@ import type { Mat, MatVector } from '@techstark/opencv-js'
 
 export interface aruco_Dictionary {
   generateImageMarker(id: number, sidePixels: number, img: Mat, borderBits: number): void
+  /** Frees the underlying WASM-heap object. Must be called explicitly (see src/cv/mats.ts). */
+  delete(): void
 }
 
 export interface aruco_DetectorParameters {
   cornerRefinementMethod: number
+  /** Frees the underlying WASM-heap object. Must be called explicitly (see src/cv/mats.ts). */
+  delete(): void
   [key: string]: any
 }
 
-export interface aruco_RefineParameters {}
+export interface aruco_RefineParameters {
+  /** Frees the underlying WASM-heap object. Must be called explicitly (see src/cv/mats.ts). */
+  delete(): void
+}
 
 export interface aruco_ArucoDetector {
   detectMarkers(image: Mat, corners: MatVector, ids: Mat, rejected?: MatVector): void
+  /** Frees the underlying WASM-heap object. Must be called explicitly (see src/cv/mats.ts). */
+  delete(): void
 }
 
 export interface CvAruco {
