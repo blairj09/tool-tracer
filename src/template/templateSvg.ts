@@ -20,6 +20,13 @@ export function templateSvg(opts: TemplateSvgOptions): string {
   const layouts = markerLayouts(paper, scale)
   const area = workingArea(paper, scale)
 
+  // Each marker's black cells are merged into a single <path> (one filled
+  // subpath per cell) rather than adjacent <rect>s: adjacent rects can leave
+  // hairline gaps on screen (and faint printed lines) due to sub-pixel
+  // rounding, even though the underlying geometry is seamless. Overlapping
+  // each cell by a hair (0.01mm per side) and forcing crisp-edge rendering
+  // eliminates that without visibly changing the marker's printed size.
+  const CELL_OVERLAP_MM = 0.01
   const markerRects = layouts
     .map((layout) => {
       const grid = bits[layout.id]
@@ -27,18 +34,21 @@ export function templateSvg(opts: TemplateSvgOptions): string {
       const gridSize = grid.length
       const markerSizeMm = MARKER_SIZE_MM * scale
       const cell = markerSizeMm / gridSize
+      const overlap = CELL_OVERLAP_MM * scale
+      const side = cell + 2 * overlap
       const originX = layout.corners[0].x
       const originY = layout.corners[0].y
-      const cells: string[] = []
+      const subpaths: string[] = []
       for (let row = 0; row < gridSize; row++) {
         for (let col = 0; col < gridSize; col++) {
           if (!grid[row][col]) continue
-          const x = originX + col * cell
-          const y = originY + row * cell
-          cells.push(`<rect x="${fmt(x)}" y="${fmt(y)}" width="${fmt(cell)}" height="${fmt(cell)}" fill="#000"/>`)
+          const x = originX + col * cell - overlap
+          const y = originY + row * cell - overlap
+          subpaths.push(`M${fmt(x)} ${fmt(y)} h${fmt(side)} v${fmt(side)} h${fmt(-side)} z`)
         }
       }
-      return `<g data-marker-id="${layout.id}">${cells.join('')}</g>`
+      if (subpaths.length === 0) return ''
+      return `<g data-marker-id="${layout.id}" fill="#000" shape-rendering="crispEdges"><path d="${subpaths.join(' ')}"/></g>`
     })
     .join('')
 

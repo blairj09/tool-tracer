@@ -7,6 +7,8 @@ import { getMeasuredScaleBarMm, setMeasuredScaleBarMm } from './calibration'
 
 interface TemplatePageProps {
   onBack: () => void
+  paper: PaperSize
+  onPaperChange: (paper: PaperSize) => void
 }
 
 const PAPER_CSS_SIZE: Record<PaperSize, string> = {
@@ -14,8 +16,7 @@ const PAPER_CSS_SIZE: Record<PaperSize, string> = {
   a4: 'A4',
 }
 
-export default function TemplatePage({ onBack }: TemplatePageProps) {
-  const [paper, setPaper] = useState<PaperSize>('letter')
+export default function TemplatePage({ onBack, paper, onPaperChange }: TemplatePageProps) {
   const [bits, setBits] = useState<Record<number, boolean[][]> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [measuredMm, setMeasuredMm] = useState<number>(() => getMeasuredScaleBarMm())
@@ -60,7 +61,7 @@ export default function TemplatePage({ onBack }: TemplatePageProps) {
 
         <label className="field">
           Paper size
-          <select value={paper} onChange={(e) => setPaper(e.target.value as PaperSize)}>
+          <select value={paper} onChange={(e) => onPaperChange(e.target.value as PaperSize)}>
             <option value="letter">Letter</option>
             <option value="a4">A4</option>
           </select>
@@ -81,6 +82,16 @@ export default function TemplatePage({ onBack }: TemplatePageProps) {
           Print
         </button>
       </div>
+
+      <ol className="template-instructions">
+        <li>Print at 100% / Actual size (turn off "Fit to page" in your print dialog).</li>
+        <li>
+          After printing, measure the 100&nbsp;mm scale bar on the page with a ruler and enter what you measured
+          above &mdash; this corrects for any printer scaling error.
+        </li>
+        <li>Place the tool inside the grey rectangle, well away from the four corner markers.</li>
+        <li>Photograph the page straight down from above, with even lighting and all four markers visible.</li>
+      </ol>
 
       {error && <p className="template-error">Failed to load OpenCV.js: {error}</p>}
       {!svg && !error && <p className="template-loading">Loading OpenCV.js (about 13 MB, this can take a moment)&hellip;</p>}
