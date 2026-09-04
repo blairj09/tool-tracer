@@ -1,16 +1,25 @@
-import { useEffect, useRef } from 'react'
-import type { ExportResult, OutlineResult, Pt, Rectified } from '../pipeline/types'
+import { useEffect, useRef, useState } from 'react'
+import { Box } from '../lib/box'
+import type { ExportResult, OutlineResult, Polygon, Pt, Rectified } from '../pipeline/types'
+import type { PhotoResult } from './types'
+import OutlineEditor from './OutlineEditor'
 
 interface ViewerProps {
-  rectified: Rectified | null
-  rawImage: ImageData | null
-  outline: OutlineResult | null
-  exportResult: ExportResult | null
+  rectified: Box<Rectified> | null
+  photo: Box<PhotoResult> | null
+  outline: Box<OutlineResult> | null
+  exportResult: Box<ExportResult> | null
+  /** `editedPolygon ?? outline.polygon` — boxed because a hand-edited or
+   * traced polygon can have hundreds of points (see box.ts). */
+  effectivePolygon: Box<Polygon> | null
   showMask: boolean
   manualPoints: Pt[]
   pickMm?: Pt
+  editMode: boolean
   onClickMm: (pt: Pt) => void
   onClickPx: (pt: Pt) => void
+  onPolygonChange: (polygon: Polygon) => void
+  onExitEditMode: () => void
 }
 
 const MASK_TINT: [number, number, number] = [220, 45, 45]
@@ -36,20 +45,29 @@ function polygonToPathD(polygon: Pt[]): string {
 
 export default function Viewer({
   rectified,
-  rawImage,
+  photo,
   outline,
   exportResult,
+  effectivePolygon,
   showMask,
   manualPoints,
   pickMm,
+  editMode,
   onClickMm,
   onClickPx,
+  onPolygonChange,
+  onExitEditMode,
 }: ViewerProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const maskCanvasRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<SVGSVGElement>(null)
+  const [overlayWidthPx, setOverlayWidthPx] = useState(0)
 
-  const activeImage = rectified ? rectified.image : rawImage
+  const rect = rectified?.value ?? null
+  const outlineValue = outline?.value ?? null
+  const rawImage = photo?.value.image ?? null
+  const activeImage = rect ? rect.image : rawImage
 
   // Draw the base image (+ manual-mode crosshairs, drawn directly in the
   // canvas's own pixel space so they always line up with the image).
@@ -62,7 +80,7 @@ export default function Viewer({
     if (!ctx) return
     ctx.putImageData(activeImage, 0, 0)
 
-    if (!rectified && manualPoints.length > 0) {
+    if (!rect && manualPoints.length > 0) {
       ctx.strokeStyle = '#1258c4'
       ctx.fillStyle = '#1258c4'
       ctx.lineWidth = Math.max(2, activeImage.width / 400)
@@ -85,42 +103,74 @@ export default function Viewer({
         ctx.fill()
       }
     }
-  }, [activeImage, rectified, manualPoints])
+  }, [activeImage, rect, manualPoints])
 
   // Draw the mask overlay (only meaningful once we have a rectified image).
   useEffect(() => {
     const maskCanvas = maskCanvasRef.current
     if (!maskCanvas) return
-    if (!rectified || !outline || !showMask) {
+    if (!rect || !outlineValue || !showMask) {
       maskCanvas.width = 0
       maskCanvas.height = 0
       return
     }
-    const tinted = tintMask(outline.mask, MASK_TINT)
+    const tinted = tintMask(outlineValue.mask, MASK_TINT)
     maskCanvas.width = tinted.width
     maskCanvas.height = tinted.height
     const ctx = maskCanvas.getContext('2d')
     if (!ctx) return
     ctx.putImageData(tinted, 0, 0)
-  }, [rectified, outline, showMask])
+  }, [rect, outlineValue, showMask])
 
-  const widthMm = rectified ? rectified.image.width / rectified.pxPerMm : 0
-  const heightMm = rectified ? rectified.image.height / rectified.pxPerMm : 0
+  // Track the overlay SVG's on-screen width so edit-mode handles stay a
+  // roughly constant screen size (~8px) regardless of zoom/layout. Re-runs
+  // when `rect` toggles because the overlay <svg> only exists while there's
+  // a rectified image.
+  useEffect(() => {
+    const el = overlayRef.current
+    if (!el) {
+      setOverlayWidthPx(0)
+      return
+    }
+    const update = () => setOverlayWidthPx(el.getBoundingClientRect().width)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rect])
+
+  // Escape exits edit mode.
+  useEffect(() => {
+    if (!editMode) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onExitEditMode()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [editMode, onExitEditMode])
+
+  const widthMm = rect ? rect.image.width / rect.pxPerMm : 0
+  const heightMm = rect ? rect.image.height / rect.pxPerMm : 0
+  const mmPerScreenPx = widthMm > 0 && overlayWidthPx > 0 ? widthMm / overlayWidthPx : 0
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (editMode) return // OutlineEditor owns interaction while editing.
     const canvas = canvasRef.current
     if (!canvas || !activeImage) return
-    const rect = canvas.getBoundingClientRect()
-    if (rect.width === 0 || rect.height === 0) return
-    const fx = (e.clientX - rect.left) / rect.width
-    const fy = (e.clientY - rect.top) / rect.height
+    const bounds = canvas.getBoundingClientRect()
+    if (bounds.width === 0 || bounds.height === 0) return
+    const fx = (e.clientX - bounds.left) / bounds.width
+    const fy = (e.clientY - bounds.top) / bounds.height
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return
-    if (rectified) {
+    if (rect) {
       onClickMm({ x: fx * widthMm, y: fy * heightMm })
     } else {
       onClickPx({ x: fx * activeImage.width, y: fy * activeImage.height })
     }
   }
+
+  const exportValue = exportResult?.value ?? null
+  const effectivePolygonValue = effectivePolygon?.value ?? null
 
   return (
     <div className="viewer">
@@ -137,29 +187,35 @@ export default function Viewer({
 
       {activeImage && (
         <div
-          className="viewer-canvas-wrap"
+          className={`viewer-canvas-wrap${editMode ? ' viewer-canvas-wrap-editing' : ''}`}
           ref={wrapRef}
           onClick={handleClick}
           style={{ aspectRatio: `${activeImage.width} / ${activeImage.height}` }}
         >
           <canvas ref={canvasRef} className="viewer-canvas" />
           <canvas ref={maskCanvasRef} className="viewer-mask-canvas" />
-          {rectified && (
+          {rect && (
             <svg
+              ref={overlayRef}
               className="viewer-overlay"
               viewBox={`0 0 ${widthMm} ${heightMm}`}
               preserveAspectRatio="none"
+              style={{ pointerEvents: editMode ? 'auto' : 'none' }}
             >
-              {outline && (
-                <path
-                  d={polygonToPathD(outline.polygon)}
-                  fill="none"
-                  stroke="#d32f2f"
-                  strokeWidth={0.4}
-                  vectorEffect="non-scaling-stroke"
-                />
+              {editMode && effectivePolygon && mmPerScreenPx > 0 ? (
+                <OutlineEditor polygon={effectivePolygon} mmPerScreenPx={mmPerScreenPx} onChange={onPolygonChange} />
+              ) : (
+                effectivePolygonValue && (
+                  <path
+                    d={polygonToPathD(effectivePolygonValue)}
+                    fill="none"
+                    stroke="#d32f2f"
+                    strokeWidth={0.4}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )
               )}
-              {pickMm && (
+              {!editMode && pickMm && (
                 <g stroke="#1258c4" strokeWidth={0.3} vectorEffect="non-scaling-stroke">
                   <line x1={pickMm.x - 3} y1={pickMm.y} x2={pickMm.x + 3} y2={pickMm.y} />
                   <line x1={pickMm.x} y1={pickMm.y - 3} x2={pickMm.x} y2={pickMm.y + 3} />
@@ -172,14 +228,14 @@ export default function Viewer({
 
       <div className="export-preview">
         <h3 className="export-preview-title">Export preview</h3>
-        {exportResult ? (
+        {exportValue ? (
           <>
             <div
               className="export-preview-canvas"
-              dangerouslySetInnerHTML={{ __html: exportResult.svg }}
+              dangerouslySetInnerHTML={{ __html: exportValue.svg }}
             />
             <p className="export-preview-caption">
-              {exportResult.widthMm.toFixed(1)} &times; {exportResult.heightMm.toFixed(1)} mm
+              {exportValue.widthMm.toFixed(1)} &times; {exportValue.heightMm.toFixed(1)} mm
             </p>
           </>
         ) : (

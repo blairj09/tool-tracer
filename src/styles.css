@@ -173,6 +173,10 @@ a {
   pointer-events: none;
 }
 
+.viewer-canvas-wrap-editing {
+  cursor: default;
+}
+
 .export-preview {
   background: #fff;
   border: 1px solid #ddd;
@@ -419,6 +423,29 @@ a {
   font-size: 0.75rem;
   color: #999;
   margin: 0.6rem 0 0;
+}
+
+/* --- Sample photo button --- */
+
+.sample-btn {
+  align-self: flex-start;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.6rem;
+}
+
+/* --- Vertex editor controls --- */
+
+.edit-vertices {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid #eee;
+}
+
+.edit-vertices .field-row-checkbox {
+  width: 100%;
 }
 
 /* --- Manual scale --- */

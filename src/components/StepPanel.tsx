@@ -1,8 +1,21 @@
+import { useState } from 'react'
+import { Box } from '../lib/box'
 import type { ExportOptions, OutlineParams, OutlineResult, ExportResult } from '../pipeline/types'
 import type { PaperSize } from '../template/layout'
 import { CheckboxField, NumberField, RangeField, TextField } from './Fields'
 import Uploader from './Uploader'
 import type { PhotoResult } from './types'
+
+interface OutlineStats {
+  toolWidthMm: number
+  toolHeightMm: number
+  points: number
+  areaMm2: number
+  // Null when export failed (e.g. a self-intersecting hand-edited polygon) —
+  // the tool measurements above still come from the effective polygon.
+  svgWidthMm: number | null
+  svgHeightMm: number | null
+}
 
 interface StepPanelProps {
   cvStatus: 'loading' | 'ready' | 'error'
@@ -17,8 +30,12 @@ interface StepPanelProps {
   onFile: (file: File) => void
   busy: boolean
 
-  photo: PhotoResult | null
+  photo: Box<PhotoResult> | null
   processError: string | null
+  hasRectified: boolean
+  rectifiedMarkersCount: number
+  rectifiedReprojErrorPx: number
+  rectifiedMode: 'markers' | 'manual' | null
   manualActive: boolean
   onUseManual: () => void
   manualPointsCount: number
@@ -30,16 +47,22 @@ interface StepPanelProps {
 
   outlineParams: OutlineParams
   onOutlineParamsChange: (params: OutlineParams) => void
-  outline: OutlineResult | null
+  outline: Box<OutlineResult> | null
   outlineError: string | null
   showMask: boolean
   onShowMaskChange: (v: boolean) => void
   hasPick: boolean
   onClearPick: () => void
 
+  editMode: boolean
+  onEditModeChange: (v: boolean) => void
+  hasEdits: boolean
+  onResetEdits: () => void
+  outlineStats: OutlineStats | null
+
   exportOpts: ExportOptions
   onExportOptsChange: (opts: ExportOptions) => void
-  exportResult: ExportResult | null
+  exportResult: Box<ExportResult> | null
   exportError: string | null
   onDownload: () => void
   onCopySvg: () => void
@@ -63,6 +86,10 @@ export default function StepPanel(props: StepPanelProps) {
     busy,
     photo,
     processError,
+    hasRectified,
+    rectifiedMarkersCount,
+    rectifiedReprojErrorPx,
+    rectifiedMode,
     manualActive,
     onUseManual,
     manualPointsCount,
@@ -79,6 +106,11 @@ export default function StepPanel(props: StepPanelProps) {
     onShowMaskChange,
     hasPick,
     onClearPick,
+    editMode,
+    onEditModeChange,
+    hasEdits,
+    onResetEdits,
+    outlineStats,
     exportOpts,
     onExportOptsChange,
     exportResult,
@@ -88,8 +120,26 @@ export default function StepPanel(props: StepPanelProps) {
     copyStatus,
   } = props
 
-  const rectified = photo?.rectified
-  const canPickManual = manualActive && !rectified
+  const [sampleLoading, setSampleLoading] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
+
+  const canPickManual = manualActive && !hasRectified
+
+  async function handleLoadSample() {
+    setSampleError(null)
+    setSampleLoading(true)
+    try {
+      const res = await fetch('/samples/synthetic-letter.png')
+      if (!res.ok) throw new Error(`Failed to fetch sample photo (${res.status})`)
+      const blob = await res.blob()
+      const sample = new File([blob], 'synthetic-letter.png', { type: blob.type || 'image/png' })
+      onFile(sample)
+    } catch (err) {
+      setSampleError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSampleLoading(false)
+    }
+  }
 
   return (
     <aside className="panel">
@@ -127,6 +177,16 @@ export default function StepPanel(props: StepPanelProps) {
         <Uploader file={file} onFile={onFile} disabled={cvStatus !== 'ready' || busy} />
         {busy && <p className="hint">Processing&hellip;</p>}
         {processError && <p className="pill pill-bad">{processError}</p>}
+        <button
+          type="button"
+          className="btn sample-btn"
+          onClick={handleLoadSample}
+          disabled={cvStatus !== 'ready' || busy || sampleLoading}
+        >
+          {sampleLoading ? 'Loading sample…' : 'Load sample photo'}
+        </button>
+        <p className="hint">Synthetic test image: an 80 &times; 30 mm rectangle and a 12 mm circle.</p>
+        {sampleError && <p className="pill pill-bad">{sampleError}</p>}
       </section>
 
       <section className="step">
@@ -134,13 +194,13 @@ export default function StepPanel(props: StepPanelProps) {
           <StepBadge n={3} /> Scale
         </h2>
         {!photo && <p className="hint">Upload a photo to detect markers.</p>}
-        {photo && !usingManualMode && !photo.error && rectified && (
+        {photo && !usingManualMode && !photo.value.error && hasRectified && (
           <p className="pill pill-good">
-            &check; {rectified.markers.length} markers found &middot; reprojection error{' '}
-            {rectified.reprojErrorPx.toFixed(2)} px
+            ✓ {rectifiedMarkersCount} markers found &middot; reprojection error{' '}
+            {rectifiedReprojErrorPx.toFixed(2)} px
           </p>
         )}
-        {photo && photo.error && !usingManualMode && <p className="pill pill-bad">{photo.error}</p>}
+        {photo && photo.value.error && !usingManualMode && <p className="pill pill-bad">{photo.value.error}</p>}
         {photo && !usingManualMode && (
           <button type="button" className="btn" onClick={onUseManual}>
             Use manual scale instead
@@ -168,7 +228,7 @@ export default function StepPanel(props: StepPanelProps) {
             {manualError && <p className="pill pill-bad">{manualError}</p>}
           </div>
         )}
-        {usingManualMode && rectified?.mode === 'manual' && (
+        {usingManualMode && rectifiedMode === 'manual' && (
           <p className="pill pill-neutral">Approximate: no perspective correction</p>
         )}
       </section>
@@ -193,7 +253,7 @@ export default function StepPanel(props: StepPanelProps) {
             onChange={(v) => onOutlineParamsChange({ ...outlineParams, threshold: v })}
           />
         )}
-        {outline && <p className="hint">Threshold used: {outline.thresholdUsed.toFixed(0)}</p>}
+        {outline && <p className="hint">Threshold used: {outline.value.thresholdUsed.toFixed(0)}</p>}
         <CheckboxField
           label="Invert (tool is lighter than paper)"
           checked={outlineParams.invert}
@@ -253,6 +313,24 @@ export default function StepPanel(props: StepPanelProps) {
           </p>
         )}
         {outlineError && <p className="pill pill-bad">{outlineError}</p>}
+
+        <div className="edit-vertices">
+          <CheckboxField
+            label="Edit vertices"
+            checked={editMode}
+            onChange={onEditModeChange}
+            disabled={!outline}
+          />
+          <button type="button" className="btn" disabled={!hasEdits} onClick={onResetEdits}>
+            Reset edits
+          </button>
+          {editMode && (
+            <p className="hint">
+              Drag a point to move it. Click an edge to add a point. Alt-click (or right-click) a point to
+              delete it.
+            </p>
+          )}
+        </div>
       </section>
 
       <section className="step">
@@ -284,10 +362,18 @@ export default function StepPanel(props: StepPanelProps) {
           value={exportOpts.name}
           onChange={(v) => onExportOptsChange({ ...exportOpts, name: v })}
         />
-        {outline && (
+        {outlineStats && (
           <p className="hint">
-            Outline: {outline.bbox.w.toFixed(1)} &times; {outline.bbox.h.toFixed(1)} mm &middot;{' '}
-            {outline.polygon.length} points &middot; area {outline.areaMm2.toFixed(0)} mm&sup2;
+            Tool: {outlineStats.toolWidthMm.toFixed(1)} &times; {outlineStats.toolHeightMm.toFixed(1)} mm &middot;{' '}
+            {outlineStats.points} points &middot; area {outlineStats.areaMm2.toFixed(0)} mm&sup2;
+            <br />
+            {outlineStats.svgWidthMm !== null && outlineStats.svgHeightMm !== null ? (
+              <>
+                SVG: {outlineStats.svgWidthMm.toFixed(1)} &times; {outlineStats.svgHeightMm.toFixed(1)} mm
+              </>
+            ) : (
+              'SVG: unavailable (export failed — see below)'
+            )}
           </p>
         )}
         <div className="export-actions">

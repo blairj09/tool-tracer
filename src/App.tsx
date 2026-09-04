@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import TemplatePage from './template/TemplatePage'
 import StepPanel from './components/StepPanel'
 import Viewer from './components/Viewer'
@@ -6,12 +6,15 @@ import type { PhotoResult } from './components/types'
 import { loadCv, type CV } from './cv/loadCv'
 import type { PaperSize } from './template/layout'
 import { getPrinterScale } from './template/calibration'
+import { Box } from './lib/box'
+import { bbox, polygonArea } from './pipeline/align'
 import {
   DEFAULT_OUTLINE_PARAMS,
   type ExportOptions,
   type ExportResult,
   type OutlineParams,
   type OutlineResult,
+  type Polygon,
   type Pt,
   type Rectified,
 } from './pipeline/types'
@@ -70,6 +73,11 @@ function App() {
   const [outlineError, setOutlineError] = useState<string | null>(null)
   const [showMask, setShowMask] = useState(false)
 
+  // Hand-edited polygon (vertex editor), or null to use `outline.polygon`
+  // as-is. Reset to null whenever the outline is recomputed.
+  const [editedPolygon, setEditedPolygon] = useState<Polygon | null>(null)
+  const [editMode, setEditMode] = useState(false)
+
   const [exportOpts, setExportOpts] = useState<ExportOptions>(DEFAULT_EXPORT_OPTS)
   const [exportResult, setExportResult] = useState<ExportResult | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
@@ -113,6 +121,8 @@ function App() {
       const { pick: _pick, ...rest } = prev
       return rest
     })
+    setEditedPolygon(null)
+    setEditMode(false)
     setExportResult(null)
     setExportError(null)
   }, [])
@@ -153,6 +163,8 @@ function App() {
       const { pick: _pick, ...rest } = prev
       return rest
     })
+    setEditedPolygon(null)
+    setEditMode(false)
     setExportResult(null)
     setExportError(null)
   }, [])
@@ -199,6 +211,7 @@ function App() {
     if (!cv || !rectified) {
       setOutline(null)
       setOutlineError(null)
+      setEditedPolygon(null)
       return
     }
     const handle = setTimeout(() => {
@@ -206,31 +219,49 @@ function App() {
         const result = extractOutline(cv, rectified, outlineParams)
         setOutline(result)
         setOutlineError(null)
+        setEditedPolygon(null)
       } catch (err) {
         setOutline(null)
         setOutlineError(err instanceof Error ? err.message : String(err))
+        setEditedPolygon(null)
       }
     }, 150)
     return () => clearTimeout(handle)
   }, [cv, rectified, outlineParams])
 
-  // Recompute the export (and preview) immediately whenever the outline or
-  // export options change.
+  // The polygon actually used for export/display: a hand-edited one if
+  // present, otherwise the traced outline as-is.
+  const effectivePolygon = editedPolygon ?? outline?.polygon ?? null
+
+  // Recompute the export (and preview) immediately whenever the effective
+  // outline or export options change.
   useEffect(() => {
-    if (!cv || !outline) {
+    if (!cv || !effectivePolygon) {
       setExportResult(null)
       setExportError(null)
       return
     }
     try {
-      const result = exportOutline(cv, outline.polygon, exportOpts)
+      const result = exportOutline(cv, effectivePolygon, exportOpts)
       setExportResult(result)
       setExportError(null)
     } catch (err) {
       setExportResult(null)
       setExportError(err instanceof Error ? err.message : String(err))
     }
-  }, [cv, outline, exportOpts])
+  }, [cv, effectivePolygon, exportOpts])
+
+  const handlePolygonChange = useCallback((polygon: Polygon) => {
+    setEditedPolygon(polygon)
+  }, [])
+
+  const handleResetEdits = useCallback(() => {
+    setEditedPolygon(null)
+  }, [])
+
+  const handleExitEditMode = useCallback(() => {
+    setEditMode(false)
+  }, [])
 
   const handleDownload = useCallback(() => {
     if (!exportResult) return
@@ -249,6 +280,65 @@ function App() {
         setTimeout(() => setCopyStatus(null), 2000)
       })
   }, [exportResult])
+
+  // --- Boxed props ----------------------------------------------------
+  //
+  // React 19.2's dev-mode "Components" performance track diffs old vs new
+  // props on every render and recursively enumerates object values up to 3
+  // levels deep (`addObjectDiffToProperties` in react-dom's dev bundle).
+  // Viewer and StepPanel receive props containing raw ImageData
+  // (rectified.image, outline.mask, photo.image) and, once vertex editing
+  // is involved, polygons with hundreds of points — passed unboxed, the
+  // profiler walked those pixel buffers entry-by-entry: 31,279,406
+  // property entries enumerated for a single Viewer render and 15,840,034
+  // for StepPanel, pushing the heap from 84 MB to 2.2 GB on one upload and
+  // crashing React with `DataCloneError: Failed to execute 'measure' on
+  // 'Performance': out of memory` followed by `Should not already be
+  // working`. This only happens under `npm run dev` (the profiler is
+  // stripped from production builds), but that's how the app is meant to
+  // be run, so it has to be fixed: wrap every large buffer in an opaque
+  // `Box` (private field ⇒ nothing enumerable) before it crosses a
+  // component boundary as a prop.
+  const photoBox = useMemo(() => (photo ? new Box(photo) : null), [photo])
+  const rectifiedBox = useMemo(() => (rectified ? new Box(rectified) : null), [rectified])
+  const outlineBox = useMemo(() => (outline ? new Box(outline) : null), [outline])
+  const exportResultBox = useMemo(() => (exportResult ? new Box(exportResult) : null), [exportResult])
+  const effectivePolygonBox = useMemo(
+    () => (effectivePolygon ? new Box(effectivePolygon) : null),
+    [effectivePolygon],
+  )
+
+  // "Tool" numbers prefer the aligned/exported polygon (matches what's in
+  // the SVG); if export itself failed (e.g. clearance offsetting choking on
+  // a self-intersecting hand-edited polygon) fall back to the effective
+  // polygon in image-frame coordinates rather than hiding the readout
+  // entirely — the "SVG" line is left null in that case since there's no
+  // export to report a size for.
+  const outlineStats = useMemo(() => {
+    if (exportResult) {
+      const toolBox = bbox([exportResult.outline])
+      return {
+        toolWidthMm: toolBox.w,
+        toolHeightMm: toolBox.h,
+        points: exportResult.outline.length,
+        areaMm2: polygonArea(exportResult.outline),
+        svgWidthMm: exportResult.widthMm as number | null,
+        svgHeightMm: exportResult.heightMm as number | null,
+      }
+    }
+    if (effectivePolygon) {
+      const toolBox = bbox([effectivePolygon])
+      return {
+        toolWidthMm: toolBox.w,
+        toolHeightMm: toolBox.h,
+        points: effectivePolygon.length,
+        areaMm2: polygonArea(effectivePolygon),
+        svgWidthMm: null,
+        svgHeightMm: null,
+      }
+    }
+    return null
+  }, [exportResult, effectivePolygon])
 
   if (showTemplate) {
     return <TemplatePage onBack={() => setShowTemplate(false)} paper={paper} onPaperChange={setPaper} />
@@ -269,15 +359,19 @@ function App() {
 
       <main className="app-main">
         <Viewer
-          rectified={rectified}
-          rawImage={photo?.image ?? null}
-          outline={outline}
-          exportResult={exportResult}
+          rectified={rectifiedBox}
+          photo={photoBox}
+          outline={outlineBox}
+          exportResult={exportResultBox}
+          effectivePolygon={effectivePolygonBox}
           showMask={showMask}
           manualPoints={manualPoints}
           pickMm={outlineParams.pick}
+          editMode={editMode}
           onClickMm={handleClickMm}
           onClickPx={handleClickPx}
+          onPolygonChange={handlePolygonChange}
+          onExitEditMode={handleExitEditMode}
         />
         <StepPanel
           cvStatus={cvStatus}
@@ -289,8 +383,12 @@ function App() {
           file={file}
           onFile={handleFile}
           busy={busy}
-          photo={photo}
+          photo={photoBox}
           processError={processError}
+          hasRectified={!!rectified}
+          rectifiedMarkersCount={rectified?.markers.length ?? 0}
+          rectifiedReprojErrorPx={rectified?.reprojErrorPx ?? 0}
+          rectifiedMode={rectified?.mode ?? null}
           manualActive={manualActive}
           onUseManual={handleUseManual}
           manualPointsCount={manualPoints.length}
@@ -301,15 +399,20 @@ function App() {
           usingManualMode={usingManualMode}
           outlineParams={outlineParams}
           onOutlineParamsChange={setOutlineParams}
-          outline={outline}
+          outline={outlineBox}
           outlineError={outlineError}
           showMask={showMask}
           onShowMaskChange={setShowMask}
           hasPick={!!outlineParams.pick}
           onClearPick={handleClearPick}
+          editMode={editMode}
+          onEditModeChange={setEditMode}
+          hasEdits={editedPolygon !== null}
+          onResetEdits={handleResetEdits}
+          outlineStats={outlineStats}
           exportOpts={exportOpts}
           onExportOptsChange={setExportOpts}
-          exportResult={exportResult}
+          exportResult={exportResultBox}
           exportError={exportError}
           onDownload={handleDownload}
           onCopySvg={handleCopySvg}
