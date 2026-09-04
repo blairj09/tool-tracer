@@ -675,7 +675,7 @@ function App() {
         transform: layout[tool.id] ?? IDENTITY,
         components: tool.components.map((c) => ({ name: c.name, polygon: c.edited ?? c.polygon, clearanceMm: c.clearanceMm })),
       }
-      const result = exportTools(cv, [input], { ...exportOpts, canvas: { mode: 'auto' } })
+      const result = exportTools(cv, [input], { ...exportOpts, name: tool.name, canvas: { mode: 'auto' } })
       downloadSvg(result.svg, `${tool.name || 'tool'}.svg`)
     } catch (err) {
       setExportError(err instanceof Error ? err.message : String(err))
