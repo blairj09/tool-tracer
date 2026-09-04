@@ -1,25 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box } from '../lib/box'
-import type { ExportResult, OutlineResult, Polygon, Pt, Rectified } from '../pipeline/types'
-import type { PhotoResult } from './types'
+import { pointInPolygon } from '../pipeline/align'
+import type { DetectionResult, Polygon, Pt, Rectified, Tool } from '../pipeline/types'
+import type { PhotoResult, UiMode } from './types'
+import { colourForIndex } from './palette'
 import OutlineEditor from './OutlineEditor'
 
 interface ViewerProps {
   rectified: Box<Rectified> | null
   photo: Box<PhotoResult> | null
-  outline: Box<OutlineResult> | null
-  exportResult: Box<ExportResult> | null
-  /** `editedPolygon ?? outline.polygon` — boxed because a hand-edited or
-   * traced polygon can have hundreds of points (see box.ts). */
-  effectivePolygon: Box<Polygon> | null
+  detection: Box<DetectionResult> | null
+  /** Every tool, in list order (colour = index into the shared palette). */
+  tools: Box<Tool[]>
+  selection: { toolId: string; componentId?: string } | null
+  mode: UiMode
+  /** In-progress polygon for `mode === 'draw'`, in image-frame mm. */
+  draft: Pt[]
+  /** Effective polygon (edited ?? polygon) of the current selection (tool
+   * or component), bound to `OutlineEditor` while `mode === 'edit'`. */
+  editTarget: Box<Polygon> | null
   showMask: boolean
   manualPoints: Pt[]
-  pickMm?: Pt
-  editMode: boolean
-  onClickMm: (pt: Pt) => void
+  /** Manual-scale two-point picking, active only before `rectified` exists. */
   onClickPx: (pt: Pt) => void
+  onSelectTool: (toolId: string) => void
+  onSelectComponent: (toolId: string, componentId: string) => void
+  onAddToolAt: (pt: Pt) => void
+  onSeedComponentAt: (pt: Pt) => void
+  onDraftPoint: (pt: Pt) => void
+  onDraftComplete: () => void
+  onDraftCancel: () => void
   onPolygonChange: (polygon: Polygon) => void
-  onExitEditMode: () => void
+  onCancelMode: () => void
 }
 
 const MASK_TINT: [number, number, number] = [220, 45, 45]
@@ -43,20 +55,80 @@ function polygonToPathD(polygon: Pt[]): string {
   return `M ${first.x} ${first.y} ` + rest.map((p) => `L ${p.x} ${p.y}`).join(' ') + ' Z'
 }
 
+/** Component hit-test first (against the selected tool only), then every
+ * tool's own effective polygon. */
+function hitTest(
+  tools: Tool[],
+  selection: { toolId: string; componentId?: string } | null,
+  pt: Pt,
+): { toolId: string; componentId?: string } | null {
+  if (selection) {
+    const selTool = tools.find((t) => t.id === selection.toolId)
+    if (selTool) {
+      for (const c of selTool.components) {
+        const poly = c.edited ?? c.polygon
+        if (poly.length >= 3 && pointInPolygon(pt, poly)) {
+          return { toolId: selTool.id, componentId: c.id }
+        }
+      }
+    }
+  }
+  for (const t of tools) {
+    const poly = t.edited ?? t.polygon
+    if (poly.length >= 3 && pointInPolygon(pt, poly)) {
+      return { toolId: t.id }
+    }
+  }
+  return null
+}
+
+function modeLabel(mode: UiMode): string {
+  switch (mode) {
+    case 'select':
+      return 'Select'
+    case 'seed':
+      return 'Add component'
+    case 'draw':
+      return 'Draw component'
+    case 'edit':
+      return 'Edit vertices'
+  }
+}
+
+function modeHint(mode: UiMode): string {
+  switch (mode) {
+    case 'select':
+      return 'Click a tool to select it, or an untraced blob to add it.'
+    case 'seed':
+      return 'Click the part inside the selected tool.'
+    case 'draw':
+      return 'Click to add points; click the first point or double-click to close. Esc to cancel.'
+    case 'edit':
+      return 'Drag a point to move it. Click an edge to add a point. Alt-click (or right-click) a point to delete it. Esc to finish.'
+  }
+}
+
 export default function Viewer({
   rectified,
   photo,
-  outline,
-  exportResult,
-  effectivePolygon,
+  detection,
+  tools,
+  selection,
+  mode,
+  draft,
+  editTarget,
   showMask,
   manualPoints,
-  pickMm,
-  editMode,
-  onClickMm,
   onClickPx,
+  onSelectTool,
+  onSelectComponent,
+  onAddToolAt,
+  onSeedComponentAt,
+  onDraftPoint,
+  onDraftComplete,
+  onDraftCancel,
   onPolygonChange,
-  onExitEditMode,
+  onCancelMode,
 }: ViewerProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -65,7 +137,8 @@ export default function Viewer({
   const [overlayWidthPx, setOverlayWidthPx] = useState(0)
 
   const rect = rectified?.value ?? null
-  const outlineValue = outline?.value ?? null
+  const detectionValue = detection?.value ?? null
+  const toolsValue = tools.value
   const rawImage = photo?.value.image ?? null
   const activeImage = rect ? rect.image : rawImage
 
@@ -109,18 +182,18 @@ export default function Viewer({
   useEffect(() => {
     const maskCanvas = maskCanvasRef.current
     if (!maskCanvas) return
-    if (!rect || !outlineValue || !showMask) {
+    if (!rect || !detectionValue || !showMask) {
       maskCanvas.width = 0
       maskCanvas.height = 0
       return
     }
-    const tinted = tintMask(outlineValue.mask, MASK_TINT)
+    const tinted = tintMask(detectionValue.mask, MASK_TINT)
     maskCanvas.width = tinted.width
     maskCanvas.height = tinted.height
     const ctx = maskCanvas.getContext('2d')
     if (!ctx) return
     ctx.putImageData(tinted, 0, 0)
-  }, [rect, outlineValue, showMask])
+  }, [rect, detectionValue, showMask])
 
   // Track the overlay SVG's on-screen width so edit-mode handles stay a
   // roughly constant screen size (~8px) regardless of zoom/layout. Re-runs
@@ -139,22 +212,27 @@ export default function Viewer({
     return () => ro.disconnect()
   }, [rect])
 
-  // Escape exits edit mode.
+  // Escape always returns to select mode (and drops any in-progress draft);
+  // Enter closes an in-progress draw with >= 3 points.
   useEffect(() => {
-    if (!editMode) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onExitEditMode()
+      if (e.key === 'Escape') {
+        if (mode === 'draw') onDraftCancel()
+        else onCancelMode()
+      } else if (e.key === 'Enter' && mode === 'draw' && draft.length >= 3) {
+        onDraftComplete()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [editMode, onExitEditMode])
+  }, [mode, draft, onCancelMode, onDraftCancel, onDraftComplete])
 
   const widthMm = rect ? rect.image.width / rect.pxPerMm : 0
   const heightMm = rect ? rect.image.height / rect.pxPerMm : 0
   const mmPerScreenPx = widthMm > 0 && overlayWidthPx > 0 ? widthMm / overlayWidthPx : 0
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (editMode) return // OutlineEditor owns interaction while editing.
+    if (mode === 'edit') return // OutlineEditor owns interaction while editing.
     const canvas = canvasRef.current
     if (!canvas || !activeImage) return
     const bounds = canvas.getBoundingClientRect()
@@ -162,15 +240,43 @@ export default function Viewer({
     const fx = (e.clientX - bounds.left) / bounds.width
     const fy = (e.clientY - bounds.top) / bounds.height
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return
-    if (rect) {
-      onClickMm({ x: fx * widthMm, y: fy * heightMm })
-    } else {
+
+    if (!rect) {
       onClickPx({ x: fx * activeImage.width, y: fy * activeImage.height })
+      return
+    }
+
+    const mm = { x: fx * widthMm, y: fy * heightMm }
+    if (mode === 'select') {
+      const hit = hitTest(toolsValue, selection, mm)
+      if (hit) {
+        if (hit.componentId) onSelectComponent(hit.toolId, hit.componentId)
+        else onSelectTool(hit.toolId)
+      } else {
+        onAddToolAt(mm)
+      }
+    } else if (mode === 'seed') {
+      const selTool = selection ? toolsValue.find((t) => t.id === selection.toolId) : undefined
+      const parentPolygon = selTool ? (selTool.edited ?? selTool.polygon) : []
+      if (parentPolygon.length >= 3 && pointInPolygon(mm, parentPolygon)) {
+        onSeedComponentAt(mm)
+      }
+      // else: outside the selected tool — ignore (mode-bar hint explains where to click).
+    } else if (mode === 'draw') {
+      if (draft.length >= 3) {
+        const first = draft[0]
+        if (Math.hypot(mm.x - first.x, mm.y - first.y) <= 8 * mmPerScreenPx) {
+          onDraftComplete()
+          return
+        }
+      }
+      onDraftPoint(mm)
     }
   }
 
-  const exportValue = exportResult?.value ?? null
-  const effectivePolygonValue = effectivePolygon?.value ?? null
+  const handleDoubleClick = () => {
+    if (mode === 'draw' && draft.length >= 3) onDraftComplete()
+  }
 
   return (
     <div className="viewer">
@@ -185,11 +291,33 @@ export default function Viewer({
         </div>
       )}
 
+      {rect && (
+        <div className="mode-bar">
+          <div className="mode-bar-text">
+            <span className="mode-bar-label">{modeLabel(mode)}</span>
+            <span className="mode-bar-hint">{modeHint(mode)}</span>
+          </div>
+          <div className="mode-bar-actions">
+            {mode !== 'select' && (
+              <button type="button" className="btn" onClick={mode === 'draw' ? onDraftCancel : onCancelMode}>
+                Cancel
+              </button>
+            )}
+            {mode === 'draw' && draft.length >= 3 && (
+              <button type="button" className="btn primary" onClick={onDraftComplete}>
+                Done
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {activeImage && (
         <div
-          className={`viewer-canvas-wrap${editMode ? ' viewer-canvas-wrap-editing' : ''}`}
+          className={`viewer-canvas-wrap${mode === 'edit' ? ' viewer-canvas-wrap-editing' : ''}`}
           ref={wrapRef}
           onClick={handleClick}
+          onDoubleClick={handleDoubleClick}
           style={{ aspectRatio: `${activeImage.width} / ${activeImage.height}` }}
         >
           <canvas ref={canvasRef} className="viewer-canvas" />
@@ -200,48 +328,71 @@ export default function Viewer({
               className="viewer-overlay"
               viewBox={`0 0 ${widthMm} ${heightMm}`}
               preserveAspectRatio="none"
-              style={{ pointerEvents: editMode ? 'auto' : 'none' }}
+              style={{ pointerEvents: mode === 'edit' ? 'auto' : 'none' }}
             >
-              {editMode && effectivePolygon && mmPerScreenPx > 0 ? (
-                <OutlineEditor polygon={effectivePolygon} mmPerScreenPx={mmPerScreenPx} onChange={onPolygonChange} />
+              {mode === 'edit' && editTarget && mmPerScreenPx > 0 ? (
+                <OutlineEditor polygon={editTarget} mmPerScreenPx={mmPerScreenPx} onChange={onPolygonChange} />
               ) : (
-                effectivePolygonValue && (
-                  <path
-                    d={polygonToPathD(effectivePolygonValue)}
-                    fill="none"
-                    stroke="#d32f2f"
-                    strokeWidth={0.4}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                )
-              )}
-              {!editMode && pickMm && (
-                <g stroke="#1258c4" strokeWidth={0.3} vectorEffect="non-scaling-stroke">
-                  <line x1={pickMm.x - 3} y1={pickMm.y} x2={pickMm.x + 3} y2={pickMm.y} />
-                  <line x1={pickMm.x} y1={pickMm.y - 3} x2={pickMm.x} y2={pickMm.y + 3} />
-                </g>
+                <>
+                  {toolsValue.map((t, i) => {
+                    const poly = t.edited ?? t.polygon
+                    if (poly.length < 3) return null
+                    const isSelectedTool = selection?.toolId === t.id
+                    const colour = colourForIndex(i)
+                    return (
+                      <g key={t.id}>
+                        <path
+                          d={polygonToPathD(poly)}
+                          fill={isSelectedTool ? colour : 'none'}
+                          fillOpacity={isSelectedTool ? 0.12 : 0}
+                          stroke={colour}
+                          strokeWidth={isSelectedTool ? 0.6 : 0.35}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        {t.components.map((c) => {
+                          const cpoly = c.edited ?? c.polygon
+                          if (cpoly.length < 3) return null
+                          const isSelectedComp = isSelectedTool && selection?.componentId === c.id
+                          return (
+                            <path
+                              key={c.id}
+                              d={polygonToPathD(cpoly)}
+                              fill={isSelectedComp ? '#2e7d32' : 'none'}
+                              fillOpacity={isSelectedComp ? 0.18 : 0}
+                              stroke="#2e7d32"
+                              strokeWidth={isSelectedComp ? 0.5 : 0.3}
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          )
+                        })}
+                      </g>
+                    )
+                  })}
+                  {mode === 'draw' && draft.length > 0 && (
+                    <g stroke="#1258c4" strokeWidth={0.3} fill="none" vectorEffect="non-scaling-stroke">
+                      {draft.length > 1 && (
+                        <polyline points={draft.map((p) => `${p.x},${p.y}`).join(' ')} strokeDasharray="1.2,0.8" />
+                      )}
+                      {draft.map((p, i) => (
+                        <circle
+                          key={i}
+                          cx={p.x}
+                          cy={p.y}
+                          r={i === 0 ? 8 * mmPerScreenPx : 3 * mmPerScreenPx}
+                          fill={i === 0 ? 'rgba(18,88,196,0.25)' : '#1258c4'}
+                          stroke="#1258c4"
+                          strokeWidth={0.2}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ))}
+                    </g>
+                  )}
+                </>
               )}
             </svg>
           )}
         </div>
       )}
-
-      <div className="export-preview">
-        <h3 className="export-preview-title">Export preview</h3>
-        {exportValue ? (
-          <>
-            <div
-              className="export-preview-canvas"
-              dangerouslySetInnerHTML={{ __html: exportValue.svg }}
-            />
-            <p className="export-preview-caption">
-              {exportValue.widthMm.toFixed(1)} &times; {exportValue.heightMm.toFixed(1)} mm
-            </p>
-          </>
-        ) : (
-          <p className="export-preview-empty">No outline extracted yet.</p>
-        )}
-      </div>
     </div>
   )
 }

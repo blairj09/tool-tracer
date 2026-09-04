@@ -95,3 +95,50 @@ npm run dev
   wrapped in before it's passed as a prop — components unwrap it with
   `.value`. See the comment above the `Box` usages in `src/App.tsx` for
   the full writeup.
+
+## Multiple tools, components, arrange
+
+A photo isn't limited to one tool anymore. Every blob above the "Min area"
+threshold (Outline step) is auto-traced as its own tool, largest first;
+click any untraced blob in the photo to add it by hand, and "Remove" on a
+tool's row in the **Tools** step drops it (re-clicking its blob adds it
+back). Selecting a tool highlights it in its own colour, both in the photo
+overlay and on the arrange canvas — the same palette index is used
+everywhere so a tool's colour never changes as you work.
+
+**Components** are sub-regions of a tool — a knife's pocket clip, a
+handle's grip — and live inside the selected tool's group in the export:
+
+- **From photo** — click a point inside the tool and ToolTrace
+  auto-thresholds a region around it (own threshold/invert/open/close/
+  simplify controls, independent of the tool's own outline settings).
+- **Draw** — click points directly on the photo to trace a component by
+  hand; click the first point again (or double-click, or Enter) to close
+  it.
+
+Each component gets its own clearance offset (defaults to 0, so a tight
+component like a pocket-clip pocket can stay untouched while the tool
+outline gets its usual clearance). "Edit vertices" and "Reset edits" (Tools
+step) act on whichever is currently selected — the tool itself, or one of
+its components.
+
+The mode bar above the photo viewer always shows what a click will do
+(select, add a component from a photo point, draw a component, or edit
+vertices) — Escape always returns to plain selection.
+
+**Arrange** (new step, between Tools and Export) turns the export preview
+into an interactive canvas: drag a tool to move it, drag its rotation
+handle to spin it (hold Shift to snap to 15°), and optionally snap
+movement to a 1 mm grid. "Auto-align" rotates the selected tool so its
+long axis is horizontal; "Rotate 90°" and "Reset position" are also
+per-tool. The combined SVG preserves whatever layout you leave the tools
+in — the original photographed positions are just the starting point, not
+the final word. Canvas size is "Auto" (fits the arranged tools plus
+margin) or a fixed size in mm, e.g. to match a holder's footprint; a fixed
+canvas that's too small warns in red both around the canvas rectangle and
+in the Arrange step.
+
+**Export** downloads the combined SVG (every tool as a named group, with
+components nested inside it) or, once there's more than one tool, just
+the selected tool re-exported and auto-centred on its own — handy for
+CAD software that expects one part per file.

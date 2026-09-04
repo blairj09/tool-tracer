@@ -1,20 +1,39 @@
 import { useState } from 'react'
 import { Box } from '../lib/box'
-import type { ExportOptions, OutlineParams, OutlineResult, ExportResult } from '../pipeline/types'
+import { IDENTITY } from '../pipeline/types'
+import type { CanvasMode, ComponentParams, ExportOptions, OutlineParams, Transform } from '../pipeline/types'
 import type { PaperSize } from '../template/layout'
 import { CheckboxField, NumberField, RangeField, TextField } from './Fields'
 import Uploader from './Uploader'
-import type { PhotoResult } from './types'
+import type { PhotoResult, UiMode } from './types'
 
-interface OutlineStats {
+export interface ComponentRow {
+  id: string
+  name: string
+  source: 'auto' | 'drawn'
+  widthMm: number
+  heightMm: number
+  clearanceMm: number
+  hasEdits: boolean
+  error?: string
+  params: ComponentParams
+}
+
+export interface ToolRow {
+  id: string
+  name: string
+  colour: string
+  widthMm: number
+  heightMm: number
+  hasEdits: boolean
+  components: ComponentRow[]
+}
+
+interface ExportStats {
   toolWidthMm: number
   toolHeightMm: number
   points: number
   areaMm2: number
-  // Null when export failed (e.g. a self-intersecting hand-edited polygon) —
-  // the tool measurements above still come from the effective polygon.
-  svgWidthMm: number | null
-  svgHeightMm: number | null
 }
 
 interface StepPanelProps {
@@ -47,24 +66,51 @@ interface StepPanelProps {
 
   outlineParams: OutlineParams
   onOutlineParamsChange: (params: OutlineParams) => void
-  outline: Box<OutlineResult> | null
-  outlineError: string | null
+  thresholdUsed: number | null
+  detectionError: string | null
   showMask: boolean
   onShowMaskChange: (v: boolean) => void
-  hasPick: boolean
-  onClearPick: () => void
 
-  editMode: boolean
+  tools: Box<ToolRow[]>
+  selectedToolId: string | null
+  selectedComponentId: string | null
+  onSelectTool: (toolId: string) => void
+  onSelectComponent: (toolId: string, componentId: string) => void
+  onRenameTool: (toolId: string, name: string) => void
+  onRemoveTool: (toolId: string) => void
+  onAddComponentFromPhoto: () => void
+  onAddComponentDraw: () => void
+  onRenameComponent: (toolId: string, componentId: string, name: string) => void
+  onComponentClearanceChange: (toolId: string, componentId: string, clearanceMm: number) => void
+  onComponentParamsChange: (toolId: string, componentId: string, params: ComponentParams) => void
+  onRemoveComponent: (toolId: string, componentId: string) => void
+
+  mode: UiMode
   onEditModeChange: (v: boolean) => void
   hasEdits: boolean
   onResetEdits: () => void
-  outlineStats: OutlineStats | null
+
+  layout: Record<string, Transform>
+  onTransformChange: (toolId: string, transform: Transform) => void
+  onRotate90: (toolId: string) => void
+  onAutoAlign: (toolId: string) => void
+  onResetPosition: (toolId: string) => void
+  onResetLayout: () => void
+  canvasMode: CanvasMode
+  onCanvasModeChange: (mode: CanvasMode['mode']) => void
+  onFixedSizeChange: (patch: { widthMm?: number; heightMm?: number }) => void
+  gridSnap: boolean
+  onGridSnapChange: (v: boolean) => void
 
   exportOpts: ExportOptions
   onExportOptsChange: (opts: ExportOptions) => void
-  exportResult: Box<ExportResult> | null
+  hasExport: boolean
+  exportWidthMm: number | null
+  exportHeightMm: number | null
+  exportStats: ExportStats | null
   exportError: string | null
-  onDownload: () => void
+  onDownloadAll: () => void
+  onDownloadSelected: () => void
   onCopySvg: () => void
   copyStatus: string | null
 }
@@ -100,22 +146,47 @@ export default function StepPanel(props: StepPanelProps) {
     usingManualMode,
     outlineParams,
     onOutlineParamsChange,
-    outline,
-    outlineError,
+    thresholdUsed,
+    detectionError,
     showMask,
     onShowMaskChange,
-    hasPick,
-    onClearPick,
-    editMode,
+    tools,
+    selectedToolId,
+    selectedComponentId,
+    onSelectTool,
+    onSelectComponent,
+    onRenameTool,
+    onRemoveTool,
+    onAddComponentFromPhoto,
+    onAddComponentDraw,
+    onRenameComponent,
+    onComponentClearanceChange,
+    onComponentParamsChange,
+    onRemoveComponent,
+    mode,
     onEditModeChange,
     hasEdits,
     onResetEdits,
-    outlineStats,
+    layout,
+    onTransformChange,
+    onRotate90,
+    onAutoAlign,
+    onResetPosition,
+    onResetLayout,
+    canvasMode,
+    onCanvasModeChange,
+    onFixedSizeChange,
+    gridSnap,
+    onGridSnapChange,
     exportOpts,
     onExportOptsChange,
-    exportResult,
+    hasExport,
+    exportWidthMm,
+    exportHeightMm,
+    exportStats,
     exportError,
-    onDownload,
+    onDownloadAll,
+    onDownloadSelected,
     onCopySvg,
     copyStatus,
   } = props
@@ -124,6 +195,10 @@ export default function StepPanel(props: StepPanelProps) {
   const [sampleError, setSampleError] = useState<string | null>(null)
 
   const canPickManual = manualActive && !hasRectified
+  const toolRows = tools.value
+  const selectedTool = selectedToolId ? (toolRows.find((t) => t.id === selectedToolId) ?? null) : null
+  const selectedComponent =
+    selectedTool && selectedComponentId ? (selectedTool.components.find((c) => c.id === selectedComponentId) ?? null) : null
 
   async function handleLoadSample() {
     setSampleError(null)
@@ -253,7 +328,7 @@ export default function StepPanel(props: StepPanelProps) {
             onChange={(v) => onOutlineParamsChange({ ...outlineParams, threshold: v })}
           />
         )}
-        {outline && <p className="hint">Threshold used: {outline.value.thresholdUsed.toFixed(0)}</p>}
+        {thresholdUsed !== null && <p className="hint">Threshold used: {thresholdUsed.toFixed(0)}</p>}
         <CheckboxField
           label="Invert (tool is lighter than paper)"
           checked={outlineParams.invert}
@@ -304,38 +379,260 @@ export default function StepPanel(props: StepPanelProps) {
           onChange={(v) => onOutlineParamsChange({ ...outlineParams, minAreaMm2: v })}
         />
         <CheckboxField label="Show mask" checked={showMask} onChange={onShowMaskChange} />
-        {hasPick && (
-          <p className="hint">
-            Picked a specific blob.{' '}
-            <a href="#" onClick={(e) => { e.preventDefault(); onClearPick() }}>
-              clear pick
-            </a>
-          </p>
-        )}
-        {outlineError && <p className="pill pill-bad">{outlineError}</p>}
+        {detectionError && <p className="pill pill-bad">{detectionError}</p>}
+      </section>
 
-        <div className="edit-vertices">
-          <CheckboxField
-            label="Edit vertices"
-            checked={editMode}
-            onChange={onEditModeChange}
-            disabled={!outline}
-          />
-          <button type="button" className="btn" disabled={!hasEdits} onClick={onResetEdits}>
-            Reset edits
+      <section className="step">
+        <h2>
+          <StepBadge n={5} /> Tools
+        </h2>
+        {toolRows.length === 0 && <p className="hint">No tools traced yet. Click a blob in the photo to add one.</p>}
+        {toolRows.length > 0 && (
+          <div className="tools-list">
+            {toolRows.map((row) => (
+              <div
+                key={row.id}
+                className={`tool-row${row.id === selectedToolId ? ' tool-row-selected' : ''}`}
+                onClick={() => onSelectTool(row.id)}
+              >
+                <span className="tool-color-dot" style={{ background: row.colour }} />
+                <input
+                  className="tool-row-name"
+                  value={row.name}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => onRenameTool(row.id, e.target.value)}
+                />
+                <span className="tool-row-meta">
+                  {row.widthMm.toFixed(1)} &times; {row.heightMm.toFixed(1)} mm
+                </span>
+                <button
+                  type="button"
+                  className="btn tool-row-remove"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemoveTool(row.id)
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="hint">Click an untraced blob in the photo to add it.</p>
+
+        {selectedTool && (
+          <div className="components-section">
+            <h3 className="components-title">Components</h3>
+            {selectedTool.components.length === 0 && <p className="hint">No components yet.</p>}
+            {selectedTool.components.length > 0 && (
+              <div className="components-list">
+                {selectedTool.components.map((c) => (
+                  <div key={c.id}>
+                    <div
+                      className={`component-row${c.id === selectedComponentId ? ' component-row-selected' : ''}`}
+                      onClick={() => onSelectComponent(selectedTool.id, c.id)}
+                    >
+                      <input
+                        className="component-row-name"
+                        value={c.name}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => onRenameComponent(selectedTool.id, c.id, e.target.value)}
+                      />
+                      <span className="component-row-meta">
+                        {c.widthMm.toFixed(1)} &times; {c.heightMm.toFixed(1)} mm
+                      </span>
+                      <input
+                        type="number"
+                        className="component-row-clearance"
+                        step={0.1}
+                        value={c.clearanceMm}
+                        title="Clearance (mm)"
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => onComponentClearanceChange(selectedTool.id, c.id, Number(e.target.value))}
+                      />
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRemoveComponent(selectedTool.id, c.id)
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    {c.error && <p className="pill pill-bad component-row-error">{c.error}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="component-actions">
+              <button type="button" className="btn" onClick={onAddComponentFromPhoto}>
+                From photo
+              </button>
+              <button type="button" className="btn" onClick={onAddComponentDraw}>
+                Draw
+              </button>
+            </div>
+
+            {selectedComponent && selectedComponent.source === 'auto' && (
+              <div className="component-params">
+                <CheckboxField
+                  label="Auto threshold"
+                  checked={selectedComponent.params.threshold === 'auto'}
+                  onChange={(checked) =>
+                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                      ...selectedComponent.params,
+                      threshold: checked ? 'auto' : 128,
+                    })
+                  }
+                />
+                {selectedComponent.params.threshold !== 'auto' && (
+                  <RangeField
+                    label="Threshold"
+                    value={selectedComponent.params.threshold as number}
+                    min={0}
+                    max={255}
+                    onChange={(v) =>
+                      onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                        ...selectedComponent.params,
+                        threshold: v,
+                      })
+                    }
+                  />
+                )}
+                <CheckboxField
+                  label="Invert"
+                  checked={selectedComponent.params.invert}
+                  onChange={(checked) =>
+                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                      ...selectedComponent.params,
+                      invert: checked,
+                    })
+                  }
+                />
+                <RangeField
+                  label="Open"
+                  value={selectedComponent.params.openMm}
+                  min={0}
+                  max={3}
+                  step={0.1}
+                  displayValue={`${selectedComponent.params.openMm.toFixed(1)} mm`}
+                  onChange={(v) =>
+                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                      ...selectedComponent.params,
+                      openMm: v,
+                    })
+                  }
+                />
+                <RangeField
+                  label="Close"
+                  value={selectedComponent.params.closeMm}
+                  min={0}
+                  max={3}
+                  step={0.1}
+                  displayValue={`${selectedComponent.params.closeMm.toFixed(1)} mm`}
+                  onChange={(v) =>
+                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                      ...selectedComponent.params,
+                      closeMm: v,
+                    })
+                  }
+                />
+                <RangeField
+                  label="Simplify"
+                  value={selectedComponent.params.simplifyMm}
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  displayValue={`${selectedComponent.params.simplifyMm.toFixed(2)} mm`}
+                  onChange={(v) =>
+                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                      ...selectedComponent.params,
+                      simplifyMm: v,
+                    })
+                  }
+                />
+              </div>
+            )}
+
+            <div className="edit-vertices">
+              <CheckboxField label="Edit vertices" checked={mode === 'edit'} onChange={onEditModeChange} />
+              <button type="button" className="btn" disabled={!hasEdits} onClick={onResetEdits}>
+                Reset edits
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="step">
+        <h2>
+          <StepBadge n={6} /> Arrange
+        </h2>
+        {selectedTool ? (
+          <>
+            <NumberField
+              label="Angle"
+              value={layout[selectedTool.id]?.angleDeg ?? 0}
+              step={1}
+              suffix="deg"
+              onChange={(v) =>
+                onTransformChange(selectedTool.id, { ...(layout[selectedTool.id] ?? IDENTITY), angleDeg: v })
+              }
+            />
+            <div className="arrange-actions">
+              <button type="button" className="btn" onClick={() => onRotate90(selectedTool.id)}>
+                Rotate 90&deg;
+              </button>
+              <button type="button" className="btn" onClick={() => onAutoAlign(selectedTool.id)}>
+                Auto-align
+              </button>
+              <button type="button" className="btn" onClick={() => onResetPosition(selectedTool.id)}>
+                Reset position
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="hint">Select a tool to move or rotate it.</p>
+        )}
+        <div className="arrange-global">
+          <button type="button" className="btn" onClick={onResetLayout}>
+            Reset layout
           </button>
-          {editMode && (
-            <p className="hint">
-              Drag a point to move it. Click an edge to add a point. Alt-click (or right-click) a point to
-              delete it.
-            </p>
+          <label className="field-row">
+            <span className="field-label">Canvas</span>
+            <select value={canvasMode.mode} onChange={(e) => onCanvasModeChange(e.target.value as CanvasMode['mode'])}>
+              <option value="auto">Auto</option>
+              <option value="fixed">Fixed</option>
+            </select>
+          </label>
+          {canvasMode.mode === 'fixed' && (
+            <>
+              <NumberField
+                label="Canvas width"
+                value={canvasMode.widthMm}
+                min={1}
+                suffix="mm"
+                onChange={(v) => onFixedSizeChange({ widthMm: v })}
+              />
+              <NumberField
+                label="Canvas height"
+                value={canvasMode.heightMm}
+                min={1}
+                suffix="mm"
+                onChange={(v) => onFixedSizeChange({ heightMm: v })}
+              />
+            </>
           )}
+          <CheckboxField label="Snap to 1 mm grid" checked={gridSnap} onChange={onGridSnapChange} />
         </div>
       </section>
 
       <section className="step">
         <h2>
-          <StepBadge n={5} /> Clearance &amp; export
+          <StepBadge n={7} /> Clearance &amp; export
         </h2>
         <NumberField
           label="Clearance"
@@ -343,11 +640,6 @@ export default function StepPanel(props: StepPanelProps) {
           step={0.1}
           suffix="mm"
           onChange={(v) => onExportOptsChange({ ...exportOpts, clearanceMm: v })}
-        />
-        <CheckboxField
-          label="Auto-align (rotate to horizontal)"
-          checked={exportOpts.autoAlign}
-          onChange={(checked) => onExportOptsChange({ ...exportOpts, autoAlign: checked })}
         />
         <NumberField
           label="Margin"
@@ -362,25 +654,28 @@ export default function StepPanel(props: StepPanelProps) {
           value={exportOpts.name}
           onChange={(v) => onExportOptsChange({ ...exportOpts, name: v })}
         />
-        {outlineStats && (
+        {exportStats && (
           <p className="hint">
-            Tool: {outlineStats.toolWidthMm.toFixed(1)} &times; {outlineStats.toolHeightMm.toFixed(1)} mm &middot;{' '}
-            {outlineStats.points} points &middot; area {outlineStats.areaMm2.toFixed(0)} mm&sup2;
-            <br />
-            {outlineStats.svgWidthMm !== null && outlineStats.svgHeightMm !== null ? (
-              <>
-                SVG: {outlineStats.svgWidthMm.toFixed(1)} &times; {outlineStats.svgHeightMm.toFixed(1)} mm
-              </>
-            ) : (
-              'SVG: unavailable (export failed — see below)'
-            )}
+            Tool: {exportStats.toolWidthMm.toFixed(1)} &times; {exportStats.toolHeightMm.toFixed(1)} mm &middot;{' '}
+            {exportStats.points} points &middot; area {exportStats.areaMm2.toFixed(0)} mm&sup2;
+          </p>
+        )}
+        {exportWidthMm !== null && exportHeightMm !== null && (
+          <p className="hint">
+            SVG: {exportWidthMm.toFixed(1)} &times; {exportHeightMm.toFixed(1)} mm &middot; {toolRows.length} tool
+            {toolRows.length === 1 ? '' : 's'}
           </p>
         )}
         <div className="export-actions">
-          <button type="button" className="btn primary" disabled={!exportResult} onClick={onDownload}>
+          <button type="button" className="btn primary" disabled={!hasExport} onClick={onDownloadAll}>
             Download SVG
           </button>
-          <button type="button" className="btn" disabled={!exportResult} onClick={onCopySvg}>
+          {toolRows.length > 1 && (
+            <button type="button" className="btn" disabled={!selectedTool} onClick={onDownloadSelected}>
+              Download selected tool
+            </button>
+          )}
+          <button type="button" className="btn" disabled={!hasExport} onClick={onCopySvg}>
             Copy SVG
           </button>
         </div>
