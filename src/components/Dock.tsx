@@ -386,7 +386,7 @@ export default function Dock(props: DockProps) {
         />
 
         <div className="field-row mask-row">
-          <span className="hint">Red = what will be traced</span>
+          <span className="hint mask-hint">Red = traced area</span>
           <Toggle label="Show mask" pressed={showMask} onChange={onShowMaskChange} />
         </div>
         {detectionError && <p className="pill pill-bad">{detectionError}</p>}
@@ -639,22 +639,22 @@ export default function Dock(props: DockProps) {
               selectedTool && onTransformChange(selectedTool.id, { ...(layout[selectedTool.id] ?? IDENTITY), angleDeg: v })
             }
           />
-          <div className="arrange-btns">
-            <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onRotate90(selectedTool.id)}>
-              90&deg;
-            </button>
-            <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onAutoAlign(selectedTool.id)}>
-              Auto-align
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={!selectedTool}
-              onClick={() => selectedTool && onResetPosition(selectedTool.id)}
-            >
-              Reset
-            </button>
-          </div>
+        </div>
+        <div className="arrange-btns">
+          <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onRotate90(selectedTool.id)}>
+            90&deg;
+          </button>
+          <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onAutoAlign(selectedTool.id)}>
+            Auto-align
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!selectedTool}
+            onClick={() => selectedTool && onResetPosition(selectedTool.id)}
+          >
+            Reset
+          </button>
         </div>
         {!selectedTool && <p className="hint">Select a tool to move or rotate it.</p>}
 

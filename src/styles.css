@@ -210,6 +210,8 @@ summary:focus-visible {
   color: var(--muted);
   font-size: 12px;
   line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: background-color 120ms, border-color 120ms, color 120ms;
 }
 
@@ -864,6 +866,11 @@ summary:focus-visible {
   align-items: center;
 }
 
+.mask-hint {
+  min-width: 0;
+  flex: 1;
+}
+
 /* --- Vertex editor controls --- */
 
 .edit-vertices {
@@ -1070,7 +1077,8 @@ summary:focus-visible {
 .arrange-btns {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 6px;
+  margin-top: 0.4rem;
 }
 
 .arrange-btns .btn {

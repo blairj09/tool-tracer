@@ -242,7 +242,13 @@ export default function ArrangeCanvas({
     <>
       <div className="pane-title">
         <span className="pane-title-text">
-          Arrange · {widthMm.toFixed(0)} &times; {heightMm.toFixed(0)} mm
+          {widthMm > 0 && heightMm > 0 ? (
+            <>
+              Arrange · {widthMm.toFixed(0)} &times; {heightMm.toFixed(0)} mm
+            </>
+          ) : (
+            'Arrange'
+          )}
         </span>
       </div>
       <div className="pane-body">
