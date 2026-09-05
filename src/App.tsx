@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TemplatePage from './template/TemplatePage'
-import StepPanel from './components/StepPanel'
+import Dock from './components/Dock'
 import Viewer from './components/Viewer'
 import ArrangeCanvas, { type ArrangeItem } from './components/ArrangeCanvas'
 import { colourForIndex } from './components/palette'
@@ -136,6 +136,9 @@ function App() {
 
   const [layout, setLayout] = useState<Record<string, Transform>>({})
   const [gridSnap, setGridSnap] = useState(false)
+  // Bumped whenever the user explicitly resets the arrangement, so the
+  // arrange pane's zoom/pan also snaps back to fit.
+  const [arrangeResetSignal, setArrangeResetSignal] = useState(0)
 
   const [exportOpts, setExportOpts] = useState<ExportOptions>(DEFAULT_EXPORT_OPTS)
   const [exportResult, setExportResult] = useState<ExportResult | null>(null)
@@ -664,6 +667,7 @@ function App() {
 
   const handleResetLayout = useCallback(() => {
     setLayout({})
+    setArrangeResetSignal((n) => n + 1)
   }, [])
 
   const handleCanvasModeChange = useCallback((mode: CanvasMode['mode']) => {
@@ -850,14 +854,33 @@ function App() {
 
   const cleanupIsCustom = isCleanupCustom(outlineParams, cleanup)
 
+  // Compact header badge summarising marker/rectification status — the
+  // Capture column in the dock below still carries the full detail.
+  const markerBadge = !photo
+    ? { dot: 'status-dot-muted', text: 'No photo' }
+    : busy
+      ? { dot: 'status-dot-muted', text: 'Processing…' }
+      : rectified
+        ? { dot: 'status-dot-good', text: rectified.mode === 'markers' ? 'Markers ok' : 'Manual scale' }
+        : { dot: 'status-dot-bad', text: 'No markers' }
+
   return (
-    <>
+    <div className="app-shell">
       <header className="app-header">
         <h1>ToolTrace</h1>
+        <div className="app-header-actions">
+          <span className="status-line marker-badge">
+            <span className={`status-dot ${markerBadge.dot}`} />
+            <span className="muted-small">{markerBadge.text}</span>
+          </span>
+          <button type="button" className="link-btn" onClick={() => setShowTemplate(true)}>
+            Print template
+          </button>
+        </div>
       </header>
 
-      <main className="app-main">
-        <div className="left-column">
+      <main className="stage">
+        <section className="stage-pane">
           <Viewer
             rectified={rectifiedBox}
             photo={photoBox}
@@ -869,6 +892,7 @@ function App() {
             editTarget={editTargetBox}
             showMask={showMask}
             manualPoints={manualPoints}
+            fileName={file?.name ?? null}
             onClickPx={handleClickPx}
             onSelectTool={handleSelectTool}
             onSelectComponent={handleSelectComponent}
@@ -880,6 +904,8 @@ function App() {
             onPolygonChange={handlePolygonChange}
             onCancelMode={handleCancelMode}
           />
+        </section>
+        <section className="stage-pane">
           <ArrangeCanvas
             items={arrangeItemsBox}
             originShift={exportResult?.originShift ?? { x: 0, y: 0 }}
@@ -889,84 +915,86 @@ function App() {
             fixedCanvas={exportOpts.canvas.mode === 'fixed'}
             selectedToolId={selection?.toolId ?? null}
             gridSnap={gridSnap}
+            resetSignal={arrangeResetSignal}
             onSelectTool={handleSelectTool}
             onTransformChange={handleTransformChange}
           />
-        </div>
-        <StepPanel
-          cvStatus={cvStatus}
-          cvError={cvError}
-          paper={paper}
-          onPaperChange={setPaper}
-          onShowTemplate={() => setShowTemplate(true)}
-          printerScale={getPrinterScale()}
-          file={file}
-          onFile={handleFile}
-          busy={busy}
-          photo={photoBox}
-          processError={processError}
-          hasRectified={!!rectified}
-          rectifiedMarkersCount={rectified?.markers.length ?? 0}
-          rectifiedReprojErrorPx={rectified?.reprojErrorPx ?? 0}
-          rectifiedMode={rectified?.mode ?? null}
-          manualActive={manualActive}
-          onUseManual={handleUseManual}
-          manualPointsCount={manualPoints.length}
-          manualDistanceMm={manualDistanceMm}
-          onManualDistanceChange={setManualDistanceMm}
-          onApplyManual={handleApplyManual}
-          manualError={manualError}
-          outlineParams={outlineParams}
-          onOutlineParamsChange={setOutlineParams}
-          cleanup={cleanup}
-          onCleanupChange={handleCleanupChange}
-          cleanupIsCustom={cleanupIsCustom}
-          thresholdUsed={detection?.thresholdUsed ?? null}
-          detectionError={detectionError}
-          showMask={showMask}
-          onShowMaskChange={setShowMask}
-          tools={toolRowsBox}
-          selectedToolId={selection?.toolId ?? null}
-          selectedComponentId={selection?.componentId ?? null}
-          onSelectTool={handleSelectTool}
-          onSelectComponent={handleSelectComponent}
-          onRenameTool={handleRenameTool}
-          onRemoveTool={handleRemoveTool}
-          onAddComponentFromPhoto={handleAddComponentFromPhoto}
-          onAddComponentDraw={handleAddComponentDraw}
-          onRenameComponent={handleRenameComponent}
-          onComponentClearanceChange={handleComponentClearanceChange}
-          onComponentParamsChange={handleComponentParamsChange}
-          onRemoveComponent={handleRemoveComponent}
-          mode={mode}
-          onEditModeChange={handleEditModeChange}
-          hasEdits={hasEdits}
-          onResetEdits={handleResetEdits}
-          layout={layout}
-          onTransformChange={handleTransformChange}
-          onRotate90={handleRotate90}
-          onAutoAlign={handleAutoAlign}
-          onResetPosition={handleResetPosition}
-          onResetLayout={handleResetLayout}
-          canvasMode={exportOpts.canvas}
-          onCanvasModeChange={handleCanvasModeChange}
-          onFixedSizeChange={handleFixedSizeChange}
-          gridSnap={gridSnap}
-          onGridSnapChange={setGridSnap}
-          exportOpts={exportOpts}
-          onExportOptsChange={setExportOpts}
-          hasExport={!!exportResult}
-          exportWidthMm={exportResult?.widthMm ?? null}
-          exportHeightMm={exportResult?.heightMm ?? null}
-          exportStats={exportStats}
-          exportError={exportError}
-          onDownloadAll={handleDownloadAll}
-          onDownloadSelected={handleDownloadSelected}
-          onCopySvg={handleCopySvg}
-          copyStatus={copyStatus}
-        />
+        </section>
       </main>
-    </>
+
+      <Dock
+        cvStatus={cvStatus}
+        cvError={cvError}
+        paper={paper}
+        onPaperChange={setPaper}
+        onShowTemplate={() => setShowTemplate(true)}
+        printerScale={getPrinterScale()}
+        file={file}
+        onFile={handleFile}
+        busy={busy}
+        photo={photoBox}
+        processError={processError}
+        hasRectified={!!rectified}
+        rectifiedMarkersCount={rectified?.markers.length ?? 0}
+        rectifiedReprojErrorPx={rectified?.reprojErrorPx ?? 0}
+        rectifiedMode={rectified?.mode ?? null}
+        manualActive={manualActive}
+        onUseManual={handleUseManual}
+        manualPointsCount={manualPoints.length}
+        manualDistanceMm={manualDistanceMm}
+        onManualDistanceChange={setManualDistanceMm}
+        onApplyManual={handleApplyManual}
+        manualError={manualError}
+        outlineParams={outlineParams}
+        onOutlineParamsChange={setOutlineParams}
+        cleanup={cleanup}
+        onCleanupChange={handleCleanupChange}
+        cleanupIsCustom={cleanupIsCustom}
+        thresholdUsed={detection?.thresholdUsed ?? null}
+        detectionError={detectionError}
+        showMask={showMask}
+        onShowMaskChange={setShowMask}
+        tools={toolRowsBox}
+        selectedToolId={selection?.toolId ?? null}
+        selectedComponentId={selection?.componentId ?? null}
+        onSelectTool={handleSelectTool}
+        onSelectComponent={handleSelectComponent}
+        onRenameTool={handleRenameTool}
+        onRemoveTool={handleRemoveTool}
+        onAddComponentFromPhoto={handleAddComponentFromPhoto}
+        onAddComponentDraw={handleAddComponentDraw}
+        onRenameComponent={handleRenameComponent}
+        onComponentClearanceChange={handleComponentClearanceChange}
+        onComponentParamsChange={handleComponentParamsChange}
+        onRemoveComponent={handleRemoveComponent}
+        mode={mode}
+        onEditModeChange={handleEditModeChange}
+        hasEdits={hasEdits}
+        onResetEdits={handleResetEdits}
+        layout={layout}
+        onTransformChange={handleTransformChange}
+        onRotate90={handleRotate90}
+        onAutoAlign={handleAutoAlign}
+        onResetPosition={handleResetPosition}
+        onResetLayout={handleResetLayout}
+        canvasMode={exportOpts.canvas}
+        onCanvasModeChange={handleCanvasModeChange}
+        onFixedSizeChange={handleFixedSizeChange}
+        gridSnap={gridSnap}
+        onGridSnapChange={setGridSnap}
+        exportOpts={exportOpts}
+        onExportOptsChange={setExportOpts}
+        hasExport={!!exportResult}
+        exportWidthMm={exportResult?.widthMm ?? null}
+        exportHeightMm={exportResult?.heightMm ?? null}
+        exportStats={exportStats}
+        exportError={exportError}
+        onDownloadAll={handleDownloadAll}
+        onDownloadSelected={handleDownloadSelected}
+        onCopySvg={handleCopySvg}
+        copyStatus={copyStatus}
+      />
+    </div>
   )
 }
 

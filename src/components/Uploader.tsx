@@ -30,6 +30,7 @@ export default function Uploader({ file, onFile, disabled }: UploaderProps) {
       }}
       role="button"
       tabIndex={disabled ? -1 : 0}
+      title="Photograph straight down, all four markers visible, even lighting, no harsh shadows."
     >
       <input
         ref={inputRef}
@@ -44,17 +45,13 @@ export default function Uploader({ file, onFile, disabled }: UploaderProps) {
           e.target.value = ''
         }}
       />
-      {file ? (
-        <div className="uploader-filename">{file.name}</div>
-      ) : (
-        <div className="uploader-empty">
-          <div className="uploader-icon">📷</div>
-          <div>Drop a photo or click to choose</div>
-        </div>
-      )}
-      <p className="uploader-tip">
-        Photograph straight down, all four markers visible, even lighting, no harsh shadows.
-      </p>
+      <div className="uploader-icon" aria-hidden="true">
+        📷
+      </div>
+      <div className="uploader-text">
+        <div className="uploader-label">Drop a photo or click to choose</div>
+        {file && <div className="uploader-filename">{file.name}</div>}
+      </div>
     </div>
   )
 }

@@ -37,6 +37,16 @@ A local, browser-only tool for tracing physical tools into scaled SVGs.
    its long axis is horizontal), and margin, then download or copy the
    1:1 mm-scaled SVG.
 
+The photo and the arrange canvas sit side by side at the top of the window,
+with every control docked in a strip along the bottom — the page itself
+never scrolls (below about 1100 px wide it falls back to a normal stacked,
+scrolling layout). Both panes support zoom and pan: scroll/pinch the wheel
+to zoom in on the cursor, drag the background to pan, and use the "−" / "+"
+/ "Fit" controls in the pane's corner (the percentage readout also resets
+to fit when clicked). Zooming in doesn't change any measurement — it's
+purely a view; vertex handles and the arrange rotate handle stay a
+constant size on screen regardless of zoom level.
+
 No photo ever leaves your machine — everything (marker detection,
 rectification, outline extraction, SVG export) runs client-side.
 
@@ -84,12 +94,12 @@ npm run dev
   build records a "Components" performance track. On every render where a
   component's props changed, it diffs old vs new props and recursively
   enumerates object values up to 3 levels deep, pushing one entry per key
-  it walks. `Viewer` and `StepPanel` hold props containing `ImageData`
-  (`rectified.image`, `outline.mask`, `photo.image`) and, once vertex
-  editing is involved, polygons with hundreds of points — passed as plain
-  props, the profiler ends up enumerating the pixel arrays themselves: one
-  measured run hit 31,279,406 property entries for a single `Viewer`
-  render and 15,840,034 for `StepPanel`, taking the heap from 84 MB to
+  it walks. `Viewer` and `Dock` (originally `StepPanel`) hold props
+  containing `ImageData` (`rectified.image`, `outline.mask`, `photo.image`)
+  and, once vertex editing is involved, polygons with hundreds of points —
+  passed as plain props, the profiler ends up enumerating the pixel arrays
+  themselves: one measured run hit 31,279,406 property entries for a single
+  `Viewer` render and 15,840,034 for the panel, taking the heap from 84 MB to
   2.2 GB on one photo upload and crashing React with `DataCloneError:
   Failed to execute 'measure' on 'Performance': out of memory` followed by
   `Should not already be working`. This only happens under `npm run dev`

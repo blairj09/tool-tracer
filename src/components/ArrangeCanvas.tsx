@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box } from '../lib/box'
 import { bbox } from '../pipeline/align'
 import type { Polygon, Pt, Transform } from '../pipeline/types'
+import ZoomPane from './ZoomPane'
 
 export interface ArrangeItem {
   toolId: string
@@ -30,6 +31,8 @@ interface ArrangeCanvasProps {
   fixedCanvas: boolean
   selectedToolId: string | null
   gridSnap: boolean
+  /** Bump to reset the zoom/pan view to fit (e.g. on "Reset layout"). */
+  resetSignal?: number
   onSelectTool: (toolId: string) => void
   onTransformChange: (toolId: string, transform: Transform) => void
 }
@@ -65,11 +68,13 @@ export default function ArrangeCanvas({
   fixedCanvas,
   selectedToolId,
   gridSnap,
+  resetSignal = 0,
   onSelectTool,
   onTransformChange,
 }: ArrangeCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [overlayWidthPx, setOverlayWidthPx] = useState(0)
+  const [zoom, setZoom] = useState(1)
   const [drag, setDrag] = useState<DragState | null>(null)
 
   const hasItems = items.value.length > 0
@@ -89,6 +94,15 @@ export default function ArrangeCanvas({
     ro.observe(el)
     return () => ro.disconnect()
   }, [hasItems])
+
+  // See Viewer's equivalent effect: ZoomPane's zoom is an ancestor
+  // transform, invisible to a ResizeObserver on this element, so re-measure
+  // explicitly whenever it changes (keeps the rotate handle a constant
+  // screen size under zoom).
+  useEffect(() => {
+    const el = svgRef.current
+    if (el) setOverlayWidthPx(el.getBoundingClientRect().width)
+  }, [zoom])
 
   // Viewbox in the layout frame: bbox of every exported polygon (+ the
   // fixed-canvas rectangle, so it's visible even before anything is placed
@@ -222,21 +236,27 @@ export default function ArrangeCanvas({
   }
 
   const list = items.value
+  const resetKey = useMemo(() => ({ resetSignal, count: list.length }), [resetSignal, list.length])
 
   return (
-    <div className="arrange-canvas">
-      <h3 className="arrange-canvas-title">Arrange</h3>
-      {list.length === 0 ? (
-        <p className="arrange-canvas-empty">Trace a tool to arrange it here.</p>
-      ) : (
-        <>
-          <div className="arrange-canvas-surface" style={{ aspectRatio: `${viewBox.w} / ${viewBox.h}` }}>
-            <svg
-              ref={svgRef}
-              viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
-              preserveAspectRatio="none"
-              className="arrange-canvas-svg"
-            >
+    <>
+      <div className="pane-title">
+        <span className="pane-title-text">
+          Arrange · {widthMm.toFixed(0)} &times; {heightMm.toFixed(0)} mm
+        </span>
+      </div>
+      <div className="pane-body">
+        {list.length === 0 ? (
+          <p className="arrange-canvas-empty">Trace a tool to arrange it here.</p>
+        ) : (
+          <ZoomPane aspect={viewBox.w / viewBox.h} resetKey={resetKey} onScaleChange={setZoom}>
+            <div className="arrange-canvas-surface">
+              <svg
+                ref={svgRef}
+                viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+                preserveAspectRatio="none"
+                className="arrange-canvas-svg"
+              >
               {canvasRectLayout.w > 0 && canvasRectLayout.h > 0 && (
                 <rect
                   x={canvasRectLayout.x}
@@ -350,13 +370,11 @@ export default function ArrangeCanvas({
                 )
               })}
             </svg>
-          </div>
-          <p className="arrange-canvas-caption">
-            {widthMm.toFixed(1)} &times; {heightMm.toFixed(1)} mm
-          </p>
-          {overflow && <p className="arrange-canvas-warning">One or more tools overflow the fixed canvas.</p>}
-        </>
-      )}
-    </div>
+            </div>
+          </ZoomPane>
+        )}
+        {overflow && <p className="arrange-canvas-warning">One or more tools overflow the fixed canvas.</p>}
+      </div>
+    </>
   )
 }

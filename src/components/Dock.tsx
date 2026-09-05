@@ -1,3 +1,7 @@
+// The bottom control dock: five independently-scrolling columns (Capture,
+// Outline, Tools, Arrange, Export) spanning the width of the window. This
+// is the same content that used to live in a single scrolling right-hand
+// `StepPanel` — split into columns here so the page itself never scrolls.
 import { useState } from 'react'
 import { Box } from '../lib/box'
 import { IDENTITY } from '../pipeline/types'
@@ -36,7 +40,7 @@ interface ExportStats {
   areaMm2: number
 }
 
-interface StepPanelProps {
+interface DockProps {
   cvStatus: 'loading' | 'ready' | 'error'
   cvError: string | null
 
@@ -166,7 +170,7 @@ const CANVAS_MODE_OPTIONS: { value: CanvasMode['mode']; label: string }[] = [
   { value: 'fixed', label: 'Fixed' },
 ]
 
-export default function StepPanel(props: StepPanelProps) {
+export default function Dock(props: DockProps) {
   const {
     cvStatus,
     cvError,
@@ -266,17 +270,17 @@ export default function StepPanel(props: StepPanelProps) {
   }
 
   return (
-    <aside className="panel">
-      {cvStatus !== 'ready' && (
-        <div className="cv-status">
-          {cvStatus === 'loading' && <span className="pill pill-neutral">Loading OpenCV (13 MB)&hellip;</span>}
-          {cvStatus === 'error' && <span className="pill pill-bad">OpenCV failed to load{cvError ? `: ${cvError}` : ''}</span>}
-        </div>
-      )}
-
+    <div className="dock">
       {/* --- Capture ------------------------------------------------- */}
-      <section className="panel-section">
+      <section className="dock-col">
         <h2 className="section-label">Capture</h2>
+
+        {cvStatus !== 'ready' && (
+          <div className="cv-status">
+            {cvStatus === 'loading' && <span className="pill pill-neutral">Loading OpenCV (13 MB)&hellip;</span>}
+            {cvStatus === 'error' && <span className="pill pill-bad">OpenCV failed to load{cvError ? `: ${cvError}` : ''}</span>}
+          </div>
+        )}
 
         <div className="capture-row1">
           <select aria-label="Paper size" className="paper-select" value={paper} onChange={(e) => onPaperChange(e.target.value as PaperSize)}>
@@ -362,7 +366,7 @@ export default function StepPanel(props: StepPanelProps) {
       </section>
 
       {/* --- Outline --------------------------------------------------- */}
-      <section className="panel-section">
+      <section className="dock-col">
         <h2 className="section-label">Outline</h2>
 
         <ThresholdControl
@@ -444,7 +448,7 @@ export default function StepPanel(props: StepPanelProps) {
       </section>
 
       {/* --- Tools ------------------------------------------------------ */}
-      <section className="panel-section">
+      <section className="dock-col">
         <h2 className="section-label">Tools</h2>
         {toolRows.length === 0 && <p className="hint">No tools traced yet. Click a blob in the photo to add one.</p>}
         {toolRows.length > 0 && (
@@ -622,7 +626,7 @@ export default function StepPanel(props: StepPanelProps) {
       </section>
 
       {/* --- Arrange ----------------------------------------------------- */}
-      <section className="panel-section">
+      <section className="dock-col">
         <h2 className="section-label">Arrange</h2>
         <div className="arrange-row1">
           <NumberField
@@ -692,7 +696,7 @@ export default function StepPanel(props: StepPanelProps) {
       </section>
 
       {/* --- Export ------------------------------------------------------ */}
-      <section className="panel-section">
+      <section className="dock-col">
         <h2 className="section-label">Export</h2>
         <div className="export-grid">
           <label className="grid-field">
@@ -766,6 +770,6 @@ export default function StepPanel(props: StepPanelProps) {
         {copyStatus && <p className="hint">{copyStatus}</p>}
         {exportError && <p className="pill pill-bad">{exportError}</p>}
       </section>
-    </aside>
+    </div>
   )
 }

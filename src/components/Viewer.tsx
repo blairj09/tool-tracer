@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box } from '../lib/box'
 import { pointInPolygon } from '../pipeline/align'
 import type { DetectionResult, Polygon, Pt, Rectified, Tool } from '../pipeline/types'
 import type { PhotoResult, UiMode } from './types'
 import { colourForIndex } from './palette'
 import OutlineEditor from './OutlineEditor'
+import ZoomPane from './ZoomPane'
 
 interface ViewerProps {
   rectified: Box<Rectified> | null
@@ -21,6 +22,8 @@ interface ViewerProps {
   editTarget: Box<Polygon> | null
   showMask: boolean
   manualPoints: Pt[]
+  /** Uploaded file's name, shown in the pane title strip while idle. */
+  fileName?: string | null
   /** Manual-scale two-point picking, active only before `rectified` exists. */
   onClickPx: (pt: Pt) => void
   onSelectTool: (toolId: string) => void
@@ -119,6 +122,7 @@ export default function Viewer({
   editTarget,
   showMask,
   manualPoints,
+  fileName = null,
   onClickPx,
   onSelectTool,
   onSelectComponent,
@@ -135,6 +139,7 @@ export default function Viewer({
   const maskCanvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<SVGSVGElement>(null)
   const [overlayWidthPx, setOverlayWidthPx] = useState(0)
+  const [zoom, setZoom] = useState(1)
 
   const rect = rectified?.value ?? null
   const detectionValue = detection?.value ?? null
@@ -212,6 +217,28 @@ export default function Viewer({
     return () => ro.disconnect()
   }, [rect])
 
+  // ZoomPane's zoom is a transform on an ancestor, which a ResizeObserver on
+  // the overlay itself never sees (its own layout box doesn't change size) —
+  // re-measure explicitly whenever the zoom level changes so edit-mode
+  // handles keep a constant screen size under zoom.
+  useEffect(() => {
+    const el = overlayRef.current
+    if (el) setOverlayWidthPx(el.getBoundingClientRect().width)
+  }, [zoom])
+
+  // Identity for ZoomPane's resetKey: a fresh, empty object each time the
+  // displayed image changes (new photo, or rectification landing/changing),
+  // so zoom/pan resets without holding onto (or diffing) the actual image
+  // data — see the Box rule below for why raw photo/rectified must never
+  // cross a prop/dependency boundary unboxed.
+  const viewResetKey = useMemo(() => {
+    // Referenced only for identity — never stored. See the comment above:
+    // the object crossing into ZoomPane as a prop must stay empty.
+    void photo
+    void rect
+    return {}
+  }, [photo, rect])
+
   // Escape always returns to select mode (and drops any in-progress draft);
   // Enter closes an in-progress draw with >= 3 points.
   useEffect(() => {
@@ -279,120 +306,125 @@ export default function Viewer({
   }
 
   return (
-    <div className="viewer">
-      {!activeImage && (
-        <div className="viewer-empty">
-          <p className="viewer-empty-title">Upload a photo to begin</p>
-          <ol className="viewer-empty-steps">
-            <li>Print the template and place your tool inside the grey rectangle.</li>
-            <li>Photograph it straight down, all four markers visible.</li>
-            <li>Upload the photo — ToolTrace rectifies it and traces the outline.</li>
-          </ol>
-        </div>
-      )}
-
-      {rect && (
-        <div className="mode-bar">
-          <div className="mode-bar-text">
-            <span className="mode-bar-label">{modeLabel(mode)}</span>
-            <span className="mode-bar-hint">{modeHint(mode)}</span>
-          </div>
-          <div className="mode-bar-actions">
-            {mode !== 'select' && (
+    <>
+      <div className="pane-title">
+        {rect && mode !== 'select' ? (
+          <>
+            <div className="mode-bar-text">
+              <span className="mode-bar-label">{modeLabel(mode)}</span>
+              <span className="mode-bar-hint">{modeHint(mode)}</span>
+            </div>
+            <div className="mode-bar-actions">
               <button type="button" className="link-btn" onClick={mode === 'draw' ? onDraftCancel : onCancelMode}>
                 Cancel
               </button>
-            )}
-            {mode === 'draw' && draft.length >= 3 && (
-              <button type="button" className="link-btn" onClick={onDraftComplete}>
-                Done
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+              {mode === 'draw' && draft.length >= 3 && (
+                <button type="button" className="link-btn" onClick={onDraftComplete}>
+                  Done
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <span className="pane-title-text">Photo{fileName ? ` · ${fileName}` : ''}</span>
+        )}
+      </div>
 
-      {activeImage && (
-        <div
-          className={`viewer-canvas-wrap${mode === 'edit' ? ' viewer-canvas-wrap-editing' : ''}`}
-          ref={wrapRef}
-          onClick={handleClick}
-          onDoubleClick={handleDoubleClick}
-          style={{ aspectRatio: `${activeImage.width} / ${activeImage.height}` }}
-        >
-          <canvas ref={canvasRef} className="viewer-canvas" />
-          <canvas ref={maskCanvasRef} className="viewer-mask-canvas" />
-          {rect && (
-            <svg
-              ref={overlayRef}
-              className="viewer-overlay"
-              viewBox={`0 0 ${widthMm} ${heightMm}`}
-              preserveAspectRatio="none"
-              style={{ pointerEvents: mode === 'edit' ? 'auto' : 'none' }}
+      <div className="pane-body">
+        {!activeImage && (
+          <div className="viewer-empty">
+            <p className="viewer-empty-title">Upload a photo to begin</p>
+            <ol className="viewer-empty-steps">
+              <li>Print the template and place your tool inside the grey rectangle.</li>
+              <li>Photograph it straight down, all four markers visible.</li>
+              <li>Upload the photo — ToolTrace rectifies it and traces the outline.</li>
+            </ol>
+          </div>
+        )}
+
+        {activeImage && (
+          <ZoomPane aspect={activeImage.width / activeImage.height} resetKey={viewResetKey} onScaleChange={setZoom}>
+            <div
+              className={`viewer-canvas-wrap${mode === 'edit' ? ' viewer-canvas-wrap-editing' : ''}`}
+              ref={wrapRef}
+              onClick={handleClick}
+              onDoubleClick={handleDoubleClick}
             >
-              {mode === 'edit' && editTarget && mmPerScreenPx > 0 ? (
-                <OutlineEditor polygon={editTarget} mmPerScreenPx={mmPerScreenPx} onChange={onPolygonChange} />
-              ) : (
-                <>
-                  {toolsValue.map((t, i) => {
-                    const poly = t.edited ?? t.polygon
-                    if (poly.length < 3) return null
-                    const isSelectedTool = selection?.toolId === t.id
-                    const colour = colourForIndex(i)
-                    return (
-                      <g key={t.id}>
-                        <path
-                          d={polygonToPathD(poly)}
-                          fill={isSelectedTool ? colour : 'none'}
-                          fillOpacity={isSelectedTool ? 0.12 : 0}
-                          stroke={colour}
-                          strokeWidth={isSelectedTool ? 0.6 : 0.35}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        {t.components.map((c) => {
-                          const cpoly = c.edited ?? c.polygon
-                          if (cpoly.length < 3) return null
-                          const isSelectedComp = isSelectedTool && selection?.componentId === c.id
-                          return (
+              <canvas ref={canvasRef} className="viewer-canvas" />
+              <canvas ref={maskCanvasRef} className="viewer-mask-canvas" />
+              {rect && (
+                <svg
+                  ref={overlayRef}
+                  className="viewer-overlay"
+                  viewBox={`0 0 ${widthMm} ${heightMm}`}
+                  preserveAspectRatio="none"
+                  style={{ pointerEvents: mode === 'edit' ? 'auto' : 'none' }}
+                >
+                  {mode === 'edit' && editTarget && mmPerScreenPx > 0 ? (
+                    <OutlineEditor polygon={editTarget} mmPerScreenPx={mmPerScreenPx} onChange={onPolygonChange} />
+                  ) : (
+                    <>
+                      {toolsValue.map((t, i) => {
+                        const poly = t.edited ?? t.polygon
+                        if (poly.length < 3) return null
+                        const isSelectedTool = selection?.toolId === t.id
+                        const colour = colourForIndex(i)
+                        return (
+                          <g key={t.id}>
                             <path
-                              key={c.id}
-                              d={polygonToPathD(cpoly)}
-                              fill={isSelectedComp ? '#2e7d32' : 'none'}
-                              fillOpacity={isSelectedComp ? 0.18 : 0}
-                              stroke="#2e7d32"
-                              strokeWidth={isSelectedComp ? 0.5 : 0.3}
+                              d={polygonToPathD(poly)}
+                              fill={isSelectedTool ? colour : 'none'}
+                              fillOpacity={isSelectedTool ? 0.12 : 0}
+                              stroke={colour}
+                              strokeWidth={isSelectedTool ? 0.6 : 0.35}
                               vectorEffect="non-scaling-stroke"
                             />
-                          )
-                        })}
-                      </g>
-                    )
-                  })}
-                  {mode === 'draw' && draft.length > 0 && (
-                    <g stroke="#1258c4" strokeWidth={0.3} fill="none" vectorEffect="non-scaling-stroke">
-                      {draft.length > 1 && (
-                        <polyline points={draft.map((p) => `${p.x},${p.y}`).join(' ')} strokeDasharray="1.2,0.8" />
+                            {t.components.map((c) => {
+                              const cpoly = c.edited ?? c.polygon
+                              if (cpoly.length < 3) return null
+                              const isSelectedComp = isSelectedTool && selection?.componentId === c.id
+                              return (
+                                <path
+                                  key={c.id}
+                                  d={polygonToPathD(cpoly)}
+                                  fill={isSelectedComp ? '#2e7d32' : 'none'}
+                                  fillOpacity={isSelectedComp ? 0.18 : 0}
+                                  stroke="#2e7d32"
+                                  strokeWidth={isSelectedComp ? 0.5 : 0.3}
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              )
+                            })}
+                          </g>
+                        )
+                      })}
+                      {mode === 'draw' && draft.length > 0 && (
+                        <g stroke="#1258c4" strokeWidth={0.3} fill="none" vectorEffect="non-scaling-stroke">
+                          {draft.length > 1 && (
+                            <polyline points={draft.map((p) => `${p.x},${p.y}`).join(' ')} strokeDasharray="1.2,0.8" />
+                          )}
+                          {draft.map((p, i) => (
+                            <circle
+                              key={i}
+                              cx={p.x}
+                              cy={p.y}
+                              r={i === 0 ? 8 * mmPerScreenPx : 3 * mmPerScreenPx}
+                              fill={i === 0 ? 'rgba(18,88,196,0.25)' : '#1258c4'}
+                              stroke="#1258c4"
+                              strokeWidth={0.2}
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          ))}
+                        </g>
                       )}
-                      {draft.map((p, i) => (
-                        <circle
-                          key={i}
-                          cx={p.x}
-                          cy={p.y}
-                          r={i === 0 ? 8 * mmPerScreenPx : 3 * mmPerScreenPx}
-                          fill={i === 0 ? 'rgba(18,88,196,0.25)' : '#1258c4'}
-                          stroke="#1258c4"
-                          strokeWidth={0.2}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ))}
-                    </g>
+                    </>
                   )}
-                </>
+                </svg>
               )}
-            </svg>
-          )}
-        </div>
-      )}
-    </div>
+            </div>
+          </ZoomPane>
+        )}
+      </div>
+    </>
   )
 }
