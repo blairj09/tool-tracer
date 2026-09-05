@@ -44,12 +44,16 @@ interface RangeFieldProps {
   max: number
   step?: number
   disabled?: boolean
+  /** Visually dims the control (e.g. "overridden by Auto") without actually
+   * disabling it — dragging must still fire onChange so the caller can
+   * adopt the value and turn Auto off. */
+  dimmed?: boolean
   displayValue?: ReactNode
 }
 
-export function RangeField({ label, value, onChange, min, max, step, disabled, displayValue }: RangeFieldProps) {
+export function RangeField({ label, value, onChange, min, max, step, disabled, dimmed, displayValue }: RangeFieldProps) {
   return (
-    <label className="field-row field-row-range">
+    <label className={`field-row field-row-range${dimmed ? ' field-row-dimmed' : ''}`}>
       <span className="field-label">
         {label}
         <span className="field-value">{displayValue ?? value}</span>
@@ -81,6 +85,65 @@ export function CheckboxField({ label, checked, onChange, disabled }: CheckboxFi
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       <span className="field-label">{label}</span>
     </label>
+  )
+}
+
+interface ToggleProps {
+  label: string
+  pressed: boolean
+  onChange: (pressed: boolean) => void
+  disabled?: boolean
+  /** Visually hide the label text but keep it for screen readers. */
+  labelHidden?: boolean
+}
+
+/** A single-button pill toggle (on/off), styled distinctly from a checkbox. */
+export function Toggle({ label, pressed, onChange, disabled, labelHidden }: ToggleProps) {
+  return (
+    <button
+      type="button"
+      className={`toggle${pressed ? ' toggle-on' : ''}`}
+      aria-pressed={pressed}
+      aria-label={labelHidden ? label : undefined}
+      disabled={disabled}
+      onClick={() => onChange(!pressed)}
+    >
+      {labelHidden ? null : label}
+    </button>
+  )
+}
+
+interface SegmentedOption<T extends string> {
+  value: T
+  label: string
+}
+
+interface SegmentedProps<T extends string> {
+  options: SegmentedOption<T>[]
+  value: T
+  onChange: (value: T) => void
+  ariaLabel: string
+  disabled?: boolean
+}
+
+/** A two-(or-more)-button segmented control; each option is a real button
+ * with `aria-pressed`, grouped for screen readers via `role="group"`. */
+export function Segmented<T extends string>({ options, value, onChange, ariaLabel, disabled }: SegmentedProps<T>) {
+  return (
+    <div className="segmented" role="group" aria-label={ariaLabel}>
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          className={`segmented-option${opt.value === value ? ' segmented-option-active' : ''}`}
+          aria-pressed={opt.value === value}
+          disabled={disabled}
+          onClick={() => onChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   )
 }
 

@@ -76,6 +76,31 @@ function normalizeAngle(deg: number): number {
   return wrapped < 0 ? wrapped + 360 : wrapped
 }
 
+// Cleanup slider <-> outline params mapping. A single slider (0-3, default
+// 1.0) drives three independent pipeline params at fixed ratios; the panel
+// shows "custom" once the Advanced fields have been edited away from that
+// ratio (compared with an epsilon since float multiplication of the stored
+// `cleanup` value won't round-trip exactly).
+const CLEANUP_RATIOS = { blurMm: 0.3, openMm: 0.5, closeMm: 1.0 } as const
+
+function cleanupToParams(cleanup: number): Pick<OutlineParams, 'blurMm' | 'openMm' | 'closeMm'> {
+  return {
+    blurMm: CLEANUP_RATIOS.blurMm * cleanup,
+    openMm: CLEANUP_RATIOS.openMm * cleanup,
+    closeMm: CLEANUP_RATIOS.closeMm * cleanup,
+  }
+}
+
+function isCleanupCustom(params: OutlineParams, cleanup: number): boolean {
+  const expected = cleanupToParams(cleanup)
+  const eps = 1e-6
+  return (
+    Math.abs(params.blurMm - expected.blurMm) > eps ||
+    Math.abs(params.openMm - expected.openMm) > eps ||
+    Math.abs(params.closeMm - expected.closeMm) > eps
+  )
+}
+
 function App() {
   const [showTemplate, setShowTemplate] = useState<boolean>(readInitialView)
   const [paper, setPaper] = useState<PaperSize>(readInitialPaper)
@@ -97,6 +122,7 @@ function App() {
   const [manualError, setManualError] = useState<string | null>(null)
 
   const [outlineParams, setOutlineParams] = useState<OutlineParams>(DEFAULT_OUTLINE_PARAMS)
+  const [cleanup, setCleanup] = useState(1.0)
   const [detection, setDetection] = useState<DetectionResult | null>(null)
   const [detectionError, setDetectionError] = useState<string | null>(null)
   const [showMask, setShowMask] = useState(false)
@@ -183,6 +209,11 @@ function App() {
     },
     [cv, paper, resetDerived],
   )
+
+  const handleCleanupChange = useCallback((v: number) => {
+    setCleanup(v)
+    setOutlineParams((prev) => ({ ...prev, ...cleanupToParams(v) }))
+  }, [])
 
   const handleUseManual = useCallback(() => {
     resetDerived()
@@ -817,17 +848,12 @@ function App() {
     return <TemplatePage onBack={() => setShowTemplate(false)} paper={paper} onPaperChange={setPaper} />
   }
 
-  const usingManualMode = manualActive || rectified?.mode === 'manual'
+  const cleanupIsCustom = isCleanupCustom(outlineParams, cleanup)
 
   return (
     <>
       <header className="app-header">
         <h1>ToolTrace</h1>
-        <div className="actions">
-          <button type="button" className="btn" onClick={() => setShowTemplate(true)}>
-            Print template
-          </button>
-        </div>
       </header>
 
       <main className="app-main">
@@ -890,9 +916,11 @@ function App() {
           onManualDistanceChange={setManualDistanceMm}
           onApplyManual={handleApplyManual}
           manualError={manualError}
-          usingManualMode={usingManualMode}
           outlineParams={outlineParams}
           onOutlineParamsChange={setOutlineParams}
+          cleanup={cleanup}
+          onCleanupChange={handleCleanupChange}
+          cleanupIsCustom={cleanupIsCustom}
           thresholdUsed={detection?.thresholdUsed ?? null}
           detectionError={detectionError}
           showMask={showMask}

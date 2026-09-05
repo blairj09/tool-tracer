@@ -20,14 +20,19 @@ A local, browser-only tool for tracing physical tools into scaled SVGs.
    OpenCV.js), computes a homography, and rectifies the photo into true
    millimetre coordinates. If marker detection fails, fall back to the
    manual two-point scale flow (click two points a known distance apart).
-5. **Tune the outline.** Adjust threshold/blur/morphology/simplify
-   parameters until the traced outline matches the tool; click a specific
-   blob in the photo to pick it out if more than one contour qualifies.
-6. **Fix small tracing errors by hand.** Turn on "Edit vertices" (step 4)
-   to drag points, click an edge to insert a new point, or alt-click /
-   right-click a point to delete it — directly on the rectified photo, in
-   mm coordinates. "Reset edits" discards hand edits and reverts to the
-   traced outline.
+5. **Tune the outline.** The Outline section keeps this to three controls:
+   a Threshold slider with an "Auto" toggle (drag the slider to override
+   Otsu's value and switch Auto off automatically), a single "Cleanup"
+   slider that scales blur/open/close together, and a "Show mask" toggle
+   to see exactly what will be traced. Click a specific blob in the photo
+   to pick it out if more than one contour qualifies. The individual
+   invert/blur/open/close/simplify/min-area controls are still there, one
+   click away under "Advanced".
+6. **Fix small tracing errors by hand.** Turn on "Edit vertices" (Tools
+   section) to drag points, click an edge to insert a new point, or
+   alt-click / right-click a point to delete it — directly on the
+   rectified photo, in mm coordinates. "Reset edits" discards hand edits
+   and reverts to the traced outline.
 7. **Export.** Set clearance offset, auto-alignment (rotates the tool so
    its long axis is horizontal), and margin, then download or copy the
    1:1 mm-scaled SVG.
@@ -35,10 +40,10 @@ A local, browser-only tool for tracing physical tools into scaled SVGs.
 No photo ever leaves your machine — everything (marker detection,
 rectification, outline extraction, SVG export) runs client-side.
 
-Don't have a printed template and tool handy? Step 2 has a **"Load sample
-photo"** button that fetches a synthetic test image (an 80 × 30 mm
-rectangle and a 12 mm circle on a template) and runs it through the same
-pipeline, so you can try the whole flow immediately.
+Don't have a printed template and tool handy? The Capture section has a
+**"Load sample photo"** link that fetches a synthetic test image (an
+80 × 30 mm rectangle and a 12 mm circle on a template) and runs it through
+the same pipeline, so you can try the whole flow immediately.
 
 ### Accuracy
 
@@ -99,12 +104,13 @@ npm run dev
 ## Multiple tools, components, arrange
 
 A photo isn't limited to one tool anymore. Every blob above the "Min area"
-threshold (Outline step) is auto-traced as its own tool, largest first;
-click any untraced blob in the photo to add it by hand, and "Remove" on a
-tool's row in the **Tools** step drops it (re-clicking its blob adds it
-back). Selecting a tool highlights it in its own colour, both in the photo
-overlay and on the arrange canvas — the same palette index is used
-everywhere so a tool's colour never changes as you work.
+threshold (Outline section, under "Advanced") is auto-traced as its own
+tool, largest first; click any untraced blob in the photo to add it by
+hand, and the "×" that appears on hover/focus of a tool's row in the
+**Tools** section drops it (re-clicking its blob adds it back). Selecting a
+tool highlights it in its own colour, both in the photo overlay and on the
+arrange canvas — the same palette index is used everywhere so a tool's
+colour never changes as you work.
 
 **Components** are sub-regions of a tool — a knife's pocket clip, a
 handle's grip — and live inside the selected tool's group in the export:
@@ -119,24 +125,24 @@ handle's grip — and live inside the selected tool's group in the export:
 Each component gets its own clearance offset (defaults to 0, so a tight
 component like a pocket-clip pocket can stay untouched while the tool
 outline gets its usual clearance). "Edit vertices" and "Reset edits" (Tools
-step) act on whichever is currently selected — the tool itself, or one of
-its components.
+section) act on whichever is currently selected — the tool itself, or one
+of its components.
 
 The mode bar above the photo viewer always shows what a click will do
 (select, add a component from a photo point, draw a component, or edit
 vertices) — Escape always returns to plain selection.
 
-**Arrange** (new step, between Tools and Export) turns the export preview
-into an interactive canvas: drag a tool to move it, drag its rotation
-handle to spin it (hold Shift to snap to 15°), and optionally snap
-movement to a 1 mm grid. "Auto-align" rotates the selected tool so its
-long axis is horizontal; "Rotate 90°" and "Reset position" are also
-per-tool. The combined SVG preserves whatever layout you leave the tools
-in — the original photographed positions are just the starting point, not
-the final word. Canvas size is "Auto" (fits the arranged tools plus
-margin) or a fixed size in mm, e.g. to match a holder's footprint; a fixed
-canvas that's too small warns in red both around the canvas rectangle and
-in the Arrange step.
+**Arrange** (between Tools and Export) turns the export preview into an
+interactive canvas: drag a tool to move it, drag its rotation handle to
+spin it (hold Shift to snap to 15°), and optionally snap movement to a
+1 mm grid. "Auto-align" rotates the selected tool so its long axis is
+horizontal; "90°" and "Reset" (position) are also per-tool. The combined
+SVG preserves whatever layout you leave the tools in — the original
+photographed positions are just the starting point, not the final word.
+Canvas size is a segmented "Auto" / "Fixed" toggle — Auto fits the
+arranged tools plus margin, Fixed takes a size in mm, e.g. to match a
+holder's footprint; a fixed canvas that's too small warns in red both
+around the canvas rectangle and in the Arrange section.
 
 **Export** downloads the combined SVG (every tool as a named group, with
 components nested inside it) or, once there's more than one tool, just

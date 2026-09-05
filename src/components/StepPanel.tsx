@@ -3,7 +3,7 @@ import { Box } from '../lib/box'
 import { IDENTITY } from '../pipeline/types'
 import type { CanvasMode, ComponentParams, ExportOptions, OutlineParams, Transform } from '../pipeline/types'
 import type { PaperSize } from '../template/layout'
-import { CheckboxField, NumberField, RangeField, TextField } from './Fields'
+import { CheckboxField, NumberField, RangeField, Segmented, Toggle } from './Fields'
 import Uploader from './Uploader'
 import type { PhotoResult, UiMode } from './types'
 
@@ -62,10 +62,12 @@ interface StepPanelProps {
   onManualDistanceChange: (mm: number) => void
   onApplyManual: () => void
   manualError: string | null
-  usingManualMode: boolean
 
   outlineParams: OutlineParams
   onOutlineParamsChange: (params: OutlineParams) => void
+  cleanup: number
+  onCleanupChange: (v: number) => void
+  cleanupIsCustom: boolean
   thresholdUsed: number | null
   detectionError: string | null
   showMask: boolean
@@ -115,9 +117,54 @@ interface StepPanelProps {
   copyStatus: string | null
 }
 
-function StepBadge({ n }: { n: number }) {
-  return <span className="step-badge">{n}</span>
+/** Threshold row shared by the Outline section and each auto component:
+ * a label, a small Auto toggle, and a slider that stays interactive (just
+ * visually dimmed) while Auto is on, so dragging it can adopt the value and
+ * switch Auto off in one motion. `otsu` is the value shown in the readout
+ * while Auto is on (and the slider's position); pass null where no computed
+ * value is available (per-component thresholds don't have one plumbed). */
+function ThresholdControl({
+  value,
+  otsu,
+  onChange,
+}: {
+  value: number | 'auto'
+  otsu: number | null
+  onChange: (v: number | 'auto') => void
+}) {
+  const isAuto = value === 'auto'
+  const sliderValue = isAuto ? (otsu ?? 128) : value
+  const readout = isAuto ? `Auto${otsu !== null ? ` · ${otsu.toFixed(0)}` : ''}` : `${sliderValue}`
+  return (
+    <div className={`field-row field-row-range${isAuto ? ' field-row-dimmed' : ''}`}>
+      <span className="field-label">
+        <span>Threshold</span>
+        <span className="threshold-controls">
+          <Toggle label="Auto" pressed={isAuto} onChange={(on) => onChange(on ? 'auto' : (otsu ?? 128))} />
+          <span className="field-value">{readout}</span>
+        </span>
+      </span>
+      <input
+        type="range"
+        className="field-range"
+        min={0}
+        max={255}
+        value={sliderValue}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </div>
+  )
 }
+
+function parseNum(v: string): number | null {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+const CANVAS_MODE_OPTIONS: { value: CanvasMode['mode']; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'fixed', label: 'Fixed' },
+]
 
 export default function StepPanel(props: StepPanelProps) {
   const {
@@ -143,9 +190,11 @@ export default function StepPanel(props: StepPanelProps) {
     onManualDistanceChange,
     onApplyManual,
     manualError,
-    usingManualMode,
     outlineParams,
     onOutlineParamsChange,
+    cleanup,
+    onCleanupChange,
+    cleanupIsCustom,
     thresholdUsed,
     detectionError,
     showMask,
@@ -218,69 +267,76 @@ export default function StepPanel(props: StepPanelProps) {
 
   return (
     <aside className="panel">
-      <div className="cv-status">
-        {cvStatus === 'loading' && <span className="pill pill-neutral">Loading OpenCV (13 MB)&hellip;</span>}
-        {cvStatus === 'ready' && <span className="pill pill-good">OpenCV ready</span>}
-        {cvStatus === 'error' && <span className="pill pill-bad">OpenCV failed to load{cvError ? `: ${cvError}` : ''}</span>}
-      </div>
+      {cvStatus !== 'ready' && (
+        <div className="cv-status">
+          {cvStatus === 'loading' && <span className="pill pill-neutral">Loading OpenCV (13 MB)&hellip;</span>}
+          {cvStatus === 'error' && <span className="pill pill-bad">OpenCV failed to load{cvError ? `: ${cvError}` : ''}</span>}
+        </div>
+      )}
 
-      <section className="step">
-        <h2>
-          <StepBadge n={1} /> Template
-        </h2>
-        <button type="button" className="btn" onClick={onShowTemplate}>
-          Print template
-        </button>
-        <label className="field-row">
-          <span className="field-label">Paper size</span>
-          <select value={paper} onChange={(e) => onPaperChange(e.target.value as PaperSize)}>
+      {/* --- Capture ------------------------------------------------- */}
+      <section className="panel-section">
+        <h2 className="section-label">Capture</h2>
+
+        <div className="capture-row1">
+          <select aria-label="Paper size" className="paper-select" value={paper} onChange={(e) => onPaperChange(e.target.value as PaperSize)}>
             <option value="letter">Letter</option>
             <option value="a4">A4</option>
           </select>
-        </label>
-        <div className="field-row">
-          <span className="field-label">Printer scale</span>
-          <span className="field-readout">{printerScale.toFixed(4)}&times;</span>
+          <button type="button" className="btn" onClick={onShowTemplate}>
+            Print template
+          </button>
         </div>
-        <p className="hint">Set on the template page.</p>
-      </section>
+        {printerScale !== 1 && (
+          <p className="hint muted-small">Printer scale {printerScale.toFixed(4)}&times; &middot; set on the template page</p>
+        )}
 
-      <section className="step">
-        <h2>
-          <StepBadge n={2} /> Photo
-        </h2>
         <Uploader file={file} onFile={onFile} disabled={cvStatus !== 'ready' || busy} />
-        {busy && <p className="hint">Processing&hellip;</p>}
-        {processError && <p className="pill pill-bad">{processError}</p>}
         <button
           type="button"
-          className="btn sample-btn"
+          className="link-btn sample-link"
           onClick={handleLoadSample}
           disabled={cvStatus !== 'ready' || busy || sampleLoading}
         >
           {sampleLoading ? 'Loading sample…' : 'Load sample photo'}
         </button>
-        <p className="hint">Synthetic test image: an 80 &times; 30 mm rectangle and a 12 mm circle.</p>
         {sampleError && <p className="pill pill-bad">{sampleError}</p>}
-      </section>
+        {processError && <p className="pill pill-bad">{processError}</p>}
 
-      <section className="step">
-        <h2>
-          <StepBadge n={3} /> Scale
-        </h2>
-        {!photo && <p className="hint">Upload a photo to detect markers.</p>}
-        {photo && !usingManualMode && !photo.value.error && hasRectified && (
-          <p className="pill pill-good">
-            ✓ {rectifiedMarkersCount} markers found &middot; reprojection error{' '}
-            {rectifiedReprojErrorPx.toFixed(2)} px
+        {!photo && !busy && (
+          <p className="status-line">
+            <span className="status-dot status-dot-muted" />
+            <span className="muted-small">Waiting for a photo</span>
           </p>
         )}
-        {photo && photo.value.error && !usingManualMode && <p className="pill pill-bad">{photo.value.error}</p>}
-        {photo && !usingManualMode && (
-          <button type="button" className="btn" onClick={onUseManual}>
-            Use manual scale instead
-          </button>
+        {busy && (
+          <p className="status-line">
+            <span className="status-dot status-dot-muted" />
+            <span className="muted-small">Processing&hellip;</span>
+          </p>
         )}
+        {photo && !busy && hasRectified && rectifiedMode === 'markers' && (
+          <p className="status-line">
+            <span className="status-dot status-dot-good" />
+            {rectifiedMarkersCount} markers &middot; {rectifiedReprojErrorPx.toFixed(2)} px
+          </p>
+        )}
+        {photo && !busy && hasRectified && rectifiedMode === 'manual' && (
+          <p className="status-line">
+            <span className="status-dot status-dot-good" />
+            Manual scale set &middot; approximate (no perspective correction)
+          </p>
+        )}
+        {photo && !busy && !hasRectified && !manualActive && (
+          <p className="status-line">
+            <span className="status-dot status-dot-bad" />
+            {photo.value.error ?? 'Marker detection failed'}
+            <button type="button" className="link-btn status-manual-link" onClick={onUseManual}>
+              Use manual scale
+            </button>
+          </p>
+        )}
+
         {canPickManual && (
           <div className="manual-scale">
             <p className="hint">Click two points on the photo that are a known distance apart, then enter that distance.</p>
@@ -303,89 +359,93 @@ export default function StepPanel(props: StepPanelProps) {
             {manualError && <p className="pill pill-bad">{manualError}</p>}
           </div>
         )}
-        {usingManualMode && rectifiedMode === 'manual' && (
-          <p className="pill pill-neutral">Approximate: no perspective correction</p>
-        )}
       </section>
 
-      <section className="step">
-        <h2>
-          <StepBadge n={4} /> Outline
-        </h2>
-        <CheckboxField
-          label="Auto threshold"
-          checked={outlineParams.threshold === 'auto'}
-          onChange={(checked) =>
-            onOutlineParamsChange({ ...outlineParams, threshold: checked ? 'auto' : 128 })
-          }
+      {/* --- Outline --------------------------------------------------- */}
+      <section className="panel-section">
+        <h2 className="section-label">Outline</h2>
+
+        <ThresholdControl
+          value={outlineParams.threshold}
+          otsu={thresholdUsed}
+          onChange={(v) => onOutlineParamsChange({ ...outlineParams, threshold: v })}
         />
-        {outlineParams.threshold !== 'auto' && (
-          <RangeField
-            label="Threshold"
-            value={outlineParams.threshold as number}
-            min={0}
-            max={255}
-            onChange={(v) => onOutlineParamsChange({ ...outlineParams, threshold: v })}
-          />
-        )}
-        {thresholdUsed !== null && <p className="hint">Threshold used: {thresholdUsed.toFixed(0)}</p>}
-        <CheckboxField
-          label="Invert (tool is lighter than paper)"
-          checked={outlineParams.invert}
-          onChange={(checked) => onOutlineParamsChange({ ...outlineParams, invert: checked })}
-        />
+
         <RangeField
-          label="Blur"
-          value={outlineParams.blurMm}
+          label="Cleanup"
+          value={cleanup}
           min={0}
-          max={2}
+          max={3}
           step={0.1}
-          displayValue={`${outlineParams.blurMm.toFixed(1)} mm`}
-          onChange={(v) => onOutlineParamsChange({ ...outlineParams, blurMm: v })}
+          displayValue={cleanupIsCustom ? 'custom' : `${cleanup.toFixed(1)}×`}
+          onChange={onCleanupChange}
         />
-        <RangeField
-          label="Open"
-          value={outlineParams.openMm}
-          min={0}
-          max={5}
-          step={0.1}
-          displayValue={`${outlineParams.openMm.toFixed(1)} mm`}
-          onChange={(v) => onOutlineParamsChange({ ...outlineParams, openMm: v })}
-        />
-        <RangeField
-          label="Close"
-          value={outlineParams.closeMm}
-          min={0}
-          max={5}
-          step={0.1}
-          displayValue={`${outlineParams.closeMm.toFixed(1)} mm`}
-          onChange={(v) => onOutlineParamsChange({ ...outlineParams, closeMm: v })}
-        />
-        <RangeField
-          label="Simplify"
-          value={outlineParams.simplifyMm}
-          min={0.05}
-          max={1}
-          step={0.05}
-          displayValue={`${outlineParams.simplifyMm.toFixed(2)} mm`}
-          onChange={(v) => onOutlineParamsChange({ ...outlineParams, simplifyMm: v })}
-        />
-        <NumberField
-          label="Min area"
-          value={outlineParams.minAreaMm2}
-          min={0}
-          step={10}
-          suffix="mm&sup2;"
-          onChange={(v) => onOutlineParamsChange({ ...outlineParams, minAreaMm2: v })}
-        />
-        <CheckboxField label="Show mask" checked={showMask} onChange={onShowMaskChange} />
+
+        <div className="field-row mask-row">
+          <span className="hint">Red = what will be traced</span>
+          <Toggle label="Show mask" pressed={showMask} onChange={onShowMaskChange} />
+        </div>
         {detectionError && <p className="pill pill-bad">{detectionError}</p>}
+
+        <details className="advanced">
+          <summary>Advanced</summary>
+          <div className="advanced-body">
+            <CheckboxField
+              label="Invert (tool lighter than paper)"
+              checked={outlineParams.invert}
+              onChange={(checked) => onOutlineParamsChange({ ...outlineParams, invert: checked })}
+            />
+            <RangeField
+              label="Blur"
+              value={outlineParams.blurMm}
+              min={0}
+              max={2}
+              step={0.1}
+              displayValue={`${outlineParams.blurMm.toFixed(1)} mm`}
+              onChange={(v) => onOutlineParamsChange({ ...outlineParams, blurMm: v })}
+            />
+            <RangeField
+              label="Open"
+              value={outlineParams.openMm}
+              min={0}
+              max={5}
+              step={0.1}
+              displayValue={`${outlineParams.openMm.toFixed(1)} mm`}
+              onChange={(v) => onOutlineParamsChange({ ...outlineParams, openMm: v })}
+            />
+            <RangeField
+              label="Close"
+              value={outlineParams.closeMm}
+              min={0}
+              max={5}
+              step={0.1}
+              displayValue={`${outlineParams.closeMm.toFixed(1)} mm`}
+              onChange={(v) => onOutlineParamsChange({ ...outlineParams, closeMm: v })}
+            />
+            <RangeField
+              label="Simplify"
+              value={outlineParams.simplifyMm}
+              min={0.05}
+              max={1}
+              step={0.05}
+              displayValue={`${outlineParams.simplifyMm.toFixed(2)} mm`}
+              onChange={(v) => onOutlineParamsChange({ ...outlineParams, simplifyMm: v })}
+            />
+            <NumberField
+              label="Min area"
+              value={outlineParams.minAreaMm2}
+              min={0}
+              step={10}
+              suffix="mm&sup2;"
+              onChange={(v) => onOutlineParamsChange({ ...outlineParams, minAreaMm2: v })}
+            />
+          </div>
+        </details>
       </section>
 
-      <section className="step">
-        <h2>
-          <StepBadge n={5} /> Tools
-        </h2>
+      {/* --- Tools ------------------------------------------------------ */}
+      <section className="panel-section">
+        <h2 className="section-label">Tools</h2>
         {toolRows.length === 0 && <p className="hint">No tools traced yet. Click a blob in the photo to add one.</p>}
         {toolRows.length > 0 && (
           <div className="tools-list">
@@ -407,13 +467,14 @@ export default function StepPanel(props: StepPanelProps) {
                 </span>
                 <button
                   type="button"
-                  className="btn tool-row-remove"
+                  className="row-remove-btn"
+                  aria-label={`Remove ${row.name}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     onRemoveTool(row.id)
                   }}
                 >
-                  Remove
+                  &times;
                 </button>
               </div>
             ))}
@@ -447,19 +508,21 @@ export default function StepPanel(props: StepPanelProps) {
                         className="component-row-clearance"
                         step={0.1}
                         value={c.clearanceMm}
+                        aria-label={`Clearance for ${c.name} (mm)`}
                         title="Clearance (mm)"
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) => onComponentClearanceChange(selectedTool.id, c.id, Number(e.target.value))}
                       />
                       <button
                         type="button"
-                        className="btn"
+                        className="row-remove-btn"
+                        aria-label={`Remove ${c.name}`}
                         onClick={(e) => {
                           e.stopPropagation()
                           onRemoveComponent(selectedTool.id, c.id)
                         }}
                       >
-                        Remove
+                        &times;
                       </button>
                     </div>
                     {c.error && <p className="pill pill-bad component-row-error">{c.error}</p>}
@@ -478,30 +541,16 @@ export default function StepPanel(props: StepPanelProps) {
 
             {selectedComponent && selectedComponent.source === 'auto' && (
               <div className="component-params">
-                <CheckboxField
-                  label="Auto threshold"
-                  checked={selectedComponent.params.threshold === 'auto'}
-                  onChange={(checked) =>
+                <ThresholdControl
+                  value={selectedComponent.params.threshold}
+                  otsu={null}
+                  onChange={(v) =>
                     onComponentParamsChange(selectedTool.id, selectedComponent.id, {
                       ...selectedComponent.params,
-                      threshold: checked ? 'auto' : 128,
+                      threshold: v,
                     })
                   }
                 />
-                {selectedComponent.params.threshold !== 'auto' && (
-                  <RangeField
-                    label="Threshold"
-                    value={selectedComponent.params.threshold as number}
-                    min={0}
-                    max={255}
-                    onChange={(v) =>
-                      onComponentParamsChange(selectedTool.id, selectedComponent.id, {
-                        ...selectedComponent.params,
-                        threshold: v,
-                      })
-                    }
-                  />
-                )}
                 <CheckboxField
                   label="Invert"
                   checked={selectedComponent.params.invert}
@@ -512,48 +561,53 @@ export default function StepPanel(props: StepPanelProps) {
                     })
                   }
                 />
-                <RangeField
-                  label="Open"
-                  value={selectedComponent.params.openMm}
-                  min={0}
-                  max={3}
-                  step={0.1}
-                  displayValue={`${selectedComponent.params.openMm.toFixed(1)} mm`}
-                  onChange={(v) =>
-                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
-                      ...selectedComponent.params,
-                      openMm: v,
-                    })
-                  }
-                />
-                <RangeField
-                  label="Close"
-                  value={selectedComponent.params.closeMm}
-                  min={0}
-                  max={3}
-                  step={0.1}
-                  displayValue={`${selectedComponent.params.closeMm.toFixed(1)} mm`}
-                  onChange={(v) =>
-                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
-                      ...selectedComponent.params,
-                      closeMm: v,
-                    })
-                  }
-                />
-                <RangeField
-                  label="Simplify"
-                  value={selectedComponent.params.simplifyMm}
-                  min={0.05}
-                  max={1}
-                  step={0.05}
-                  displayValue={`${selectedComponent.params.simplifyMm.toFixed(2)} mm`}
-                  onChange={(v) =>
-                    onComponentParamsChange(selectedTool.id, selectedComponent.id, {
-                      ...selectedComponent.params,
-                      simplifyMm: v,
-                    })
-                  }
-                />
+                <details className="advanced advanced-compact">
+                  <summary>Advanced</summary>
+                  <div className="advanced-body">
+                    <RangeField
+                      label="Open"
+                      value={selectedComponent.params.openMm}
+                      min={0}
+                      max={3}
+                      step={0.1}
+                      displayValue={`${selectedComponent.params.openMm.toFixed(1)} mm`}
+                      onChange={(v) =>
+                        onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                          ...selectedComponent.params,
+                          openMm: v,
+                        })
+                      }
+                    />
+                    <RangeField
+                      label="Close"
+                      value={selectedComponent.params.closeMm}
+                      min={0}
+                      max={3}
+                      step={0.1}
+                      displayValue={`${selectedComponent.params.closeMm.toFixed(1)} mm`}
+                      onChange={(v) =>
+                        onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                          ...selectedComponent.params,
+                          closeMm: v,
+                        })
+                      }
+                    />
+                    <RangeField
+                      label="Simplify"
+                      value={selectedComponent.params.simplifyMm}
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      displayValue={`${selectedComponent.params.simplifyMm.toFixed(2)} mm`}
+                      onChange={(v) =>
+                        onComponentParamsChange(selectedTool.id, selectedComponent.id, {
+                          ...selectedComponent.params,
+                          simplifyMm: v,
+                        })
+                      }
+                    />
+                  </div>
+                </details>
               </div>
             )}
 
@@ -567,93 +621,123 @@ export default function StepPanel(props: StepPanelProps) {
         )}
       </section>
 
-      <section className="step">
-        <h2>
-          <StepBadge n={6} /> Arrange
-        </h2>
-        {selectedTool ? (
-          <>
-            <NumberField
-              label="Angle"
-              value={layout[selectedTool.id]?.angleDeg ?? 0}
-              step={1}
-              suffix="deg"
-              onChange={(v) =>
-                onTransformChange(selectedTool.id, { ...(layout[selectedTool.id] ?? IDENTITY), angleDeg: v })
-              }
-            />
-            <div className="arrange-actions">
-              <button type="button" className="btn" onClick={() => onRotate90(selectedTool.id)}>
-                Rotate 90&deg;
-              </button>
-              <button type="button" className="btn" onClick={() => onAutoAlign(selectedTool.id)}>
-                Auto-align
-              </button>
-              <button type="button" className="btn" onClick={() => onResetPosition(selectedTool.id)}>
-                Reset position
-              </button>
+      {/* --- Arrange ----------------------------------------------------- */}
+      <section className="panel-section">
+        <h2 className="section-label">Arrange</h2>
+        <div className="arrange-row1">
+          <NumberField
+            label="Angle"
+            value={selectedTool ? (layout[selectedTool.id]?.angleDeg ?? 0) : 0}
+            step={1}
+            suffix="deg"
+            disabled={!selectedTool}
+            onChange={(v) =>
+              selectedTool && onTransformChange(selectedTool.id, { ...(layout[selectedTool.id] ?? IDENTITY), angleDeg: v })
+            }
+          />
+          <div className="arrange-btns">
+            <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onRotate90(selectedTool.id)}>
+              90&deg;
+            </button>
+            <button type="button" className="btn" disabled={!selectedTool} onClick={() => selectedTool && onAutoAlign(selectedTool.id)}>
+              Auto-align
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!selectedTool}
+              onClick={() => selectedTool && onResetPosition(selectedTool.id)}
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+        {!selectedTool && <p className="hint">Select a tool to move or rotate it.</p>}
+
+        <div className="arrange-row2">
+          <Segmented options={CANVAS_MODE_OPTIONS} value={canvasMode.mode} onChange={onCanvasModeChange} ariaLabel="Canvas size" />
+          {canvasMode.mode === 'fixed' && (
+            <div className="canvas-size-fields">
+              <input
+                type="number"
+                className="field-number field-number-sm"
+                aria-label="Canvas width (mm)"
+                min={1}
+                value={canvasMode.widthMm}
+                onChange={(e) => {
+                  const n = parseNum(e.target.value)
+                  if (n !== null) onFixedSizeChange({ widthMm: n })
+                }}
+              />
+              <span className="canvas-size-x">&times;</span>
+              <input
+                type="number"
+                className="field-number field-number-sm"
+                aria-label="Canvas height (mm)"
+                min={1}
+                value={canvasMode.heightMm}
+                onChange={(e) => {
+                  const n = parseNum(e.target.value)
+                  if (n !== null) onFixedSizeChange({ heightMm: n })
+                }}
+              />
+              <span className="field-suffix">mm</span>
             </div>
-          </>
-        ) : (
-          <p className="hint">Select a tool to move or rotate it.</p>
-        )}
-        <div className="arrange-global">
-          <button type="button" className="btn" onClick={onResetLayout}>
+          )}
+          <Toggle label="Snap 1 mm" pressed={gridSnap} onChange={onGridSnapChange} />
+          <button type="button" className="link-btn" onClick={onResetLayout}>
             Reset layout
           </button>
-          <label className="field-row">
-            <span className="field-label">Canvas</span>
-            <select value={canvasMode.mode} onChange={(e) => onCanvasModeChange(e.target.value as CanvasMode['mode'])}>
-              <option value="auto">Auto</option>
-              <option value="fixed">Fixed</option>
-            </select>
-          </label>
-          {canvasMode.mode === 'fixed' && (
-            <>
-              <NumberField
-                label="Canvas width"
-                value={canvasMode.widthMm}
-                min={1}
-                suffix="mm"
-                onChange={(v) => onFixedSizeChange({ widthMm: v })}
-              />
-              <NumberField
-                label="Canvas height"
-                value={canvasMode.heightMm}
-                min={1}
-                suffix="mm"
-                onChange={(v) => onFixedSizeChange({ heightMm: v })}
-              />
-            </>
-          )}
-          <CheckboxField label="Snap to 1 mm grid" checked={gridSnap} onChange={onGridSnapChange} />
         </div>
       </section>
 
-      <section className="step">
-        <h2>
-          <StepBadge n={7} /> Clearance &amp; export
-        </h2>
-        <NumberField
-          label="Clearance"
-          value={exportOpts.clearanceMm}
-          step={0.1}
-          suffix="mm"
-          onChange={(v) => onExportOptsChange({ ...exportOpts, clearanceMm: v })}
-        />
-        <NumberField
-          label="Margin"
-          value={exportOpts.marginMm}
-          min={0}
-          step={1}
-          suffix="mm"
-          onChange={(v) => onExportOptsChange({ ...exportOpts, marginMm: v })}
-        />
-        <TextField
-          label="Name"
-          value={exportOpts.name}
-          onChange={(v) => onExportOptsChange({ ...exportOpts, name: v })}
-        />
+      {/* --- Export ------------------------------------------------------ */}
+      <section className="panel-section">
+        <h2 className="section-label">Export</h2>
+        <div className="export-grid">
+          <label className="grid-field">
+            <span className="grid-field-label">Clearance</span>
+            <span className="field-control">
+              <input
+                type="number"
+                className="field-number"
+                step={0.1}
+                value={exportOpts.clearanceMm}
+                onChange={(e) => {
+                  const n = parseNum(e.target.value)
+                  if (n !== null) onExportOptsChange({ ...exportOpts, clearanceMm: n })
+                }}
+              />
+              <span className="field-suffix">mm</span>
+            </span>
+          </label>
+          <label className="grid-field">
+            <span className="grid-field-label">Margin</span>
+            <span className="field-control">
+              <input
+                type="number"
+                className="field-number"
+                min={0}
+                step={1}
+                value={exportOpts.marginMm}
+                onChange={(e) => {
+                  const n = parseNum(e.target.value)
+                  if (n !== null) onExportOptsChange({ ...exportOpts, marginMm: n })
+                }}
+              />
+              <span className="field-suffix">mm</span>
+            </span>
+          </label>
+          <label className="grid-field">
+            <span className="grid-field-label">Name</span>
+            <input
+              type="text"
+              className="field-text field-text-full"
+              value={exportOpts.name}
+              onChange={(e) => onExportOptsChange({ ...exportOpts, name: e.target.value })}
+            />
+          </label>
+        </div>
         {exportStats && (
           <p className="hint">
             Tool: {exportStats.toolWidthMm.toFixed(1)} &times; {exportStats.toolHeightMm.toFixed(1)} mm &middot;{' '}
@@ -675,7 +759,7 @@ export default function StepPanel(props: StepPanelProps) {
               Download selected tool
             </button>
           )}
-          <button type="button" className="btn" disabled={!hasExport} onClick={onCopySvg}>
+          <button type="button" className="link-btn" disabled={!hasExport} onClick={onCopySvg}>
             Copy SVG
           </button>
         </div>

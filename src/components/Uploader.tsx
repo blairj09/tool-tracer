@@ -49,7 +49,7 @@ export default function Uploader({ file, onFile, disabled }: UploaderProps) {
       ) : (
         <div className="uploader-empty">
           <div className="uploader-icon">📷</div>
-          <div>Drop a photo here, or click to choose</div>
+          <div>Drop a photo or click to choose</div>
         </div>
       )}
       <p className="uploader-tip">

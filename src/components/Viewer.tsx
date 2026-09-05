@@ -299,12 +299,12 @@ export default function Viewer({
           </div>
           <div className="mode-bar-actions">
             {mode !== 'select' && (
-              <button type="button" className="btn" onClick={mode === 'draw' ? onDraftCancel : onCancelMode}>
+              <button type="button" className="link-btn" onClick={mode === 'draw' ? onDraftCancel : onCancelMode}>
                 Cancel
               </button>
             )}
             {mode === 'draw' && draft.length >= 3 && (
-              <button type="button" className="btn primary" onClick={onDraftComplete}>
+              <button type="button" className="link-btn" onClick={onDraftComplete}>
                 Done
               </button>
             )}
