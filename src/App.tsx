@@ -854,29 +854,10 @@ function App() {
 
   const cleanupIsCustom = isCleanupCustom(outlineParams, cleanup)
 
-  // Compact header badge summarising marker/rectification status — the
-  // Capture column in the dock below still carries the full detail.
-  const markerBadge = !photo
-    ? { dot: 'status-dot-muted', text: 'No photo' }
-    : busy
-      ? { dot: 'status-dot-muted', text: 'Processing…' }
-      : rectified
-        ? { dot: 'status-dot-good', text: rectified.mode === 'markers' ? 'Markers ok' : 'Manual scale' }
-        : { dot: 'status-dot-bad', text: 'No markers' }
-
   return (
     <div className="app-shell">
       <header className="app-header">
         <h1>ToolTrace</h1>
-        <div className="app-header-actions">
-          <span className="status-line marker-badge">
-            <span className={`status-dot ${markerBadge.dot}`} />
-            <span className="muted-small">{markerBadge.text}</span>
-          </span>
-          <button type="button" className="link-btn" onClick={() => setShowTemplate(true)}>
-            Print template
-          </button>
-        </div>
       </header>
 
       <main className="stage">
@@ -892,7 +873,22 @@ function App() {
             editTarget={editTargetBox}
             showMask={showMask}
             manualPoints={manualPoints}
-            fileName={file?.name ?? null}
+            cvStatus={cvStatus}
+            cvError={cvError}
+            paper={paper}
+            onPaperChange={setPaper}
+            onShowTemplate={() => setShowTemplate(true)}
+            printerScale={getPrinterScale()}
+            file={file}
+            onFile={handleFile}
+            busy={busy}
+            processError={processError}
+            manualActive={manualActive}
+            onUseManual={handleUseManual}
+            manualDistanceMm={manualDistanceMm}
+            onManualDistanceChange={setManualDistanceMm}
+            onApplyManual={handleApplyManual}
+            manualError={manualError}
             onClickPx={handleClickPx}
             onSelectTool={handleSelectTool}
             onSelectComponent={handleSelectComponent}
@@ -923,28 +919,6 @@ function App() {
       </main>
 
       <Dock
-        cvStatus={cvStatus}
-        cvError={cvError}
-        paper={paper}
-        onPaperChange={setPaper}
-        onShowTemplate={() => setShowTemplate(true)}
-        printerScale={getPrinterScale()}
-        file={file}
-        onFile={handleFile}
-        busy={busy}
-        photo={photoBox}
-        processError={processError}
-        hasRectified={!!rectified}
-        rectifiedMarkersCount={rectified?.markers.length ?? 0}
-        rectifiedReprojErrorPx={rectified?.reprojErrorPx ?? 0}
-        rectifiedMode={rectified?.mode ?? null}
-        manualActive={manualActive}
-        onUseManual={handleUseManual}
-        manualPointsCount={manualPoints.length}
-        manualDistanceMm={manualDistanceMm}
-        onManualDistanceChange={setManualDistanceMm}
-        onApplyManual={handleApplyManual}
-        manualError={manualError}
         outlineParams={outlineParams}
         onOutlineParamsChange={setOutlineParams}
         cleanup={cleanup}

@@ -1,15 +1,13 @@
-// The bottom control dock: five independently-scrolling columns (Capture,
-// Outline, Tools, Arrange, Export) spanning the width of the window. This
-// is the same content that used to live in a single scrolling right-hand
-// `StepPanel` — split into columns here so the page itself never scrolls.
-import { useState } from 'react'
+// The bottom control dock: four independently-scrolling columns (Outline,
+// Tools, Arrange, Export) spanning the width of the window. Capture (paper
+// size, print template, upload, sample photo, marker/scale status) lives in
+// the Photo pane itself now — see Viewer.tsx — rather than as a separate
+// column here, since it's about the photo and belongs next to it.
 import { Box } from '../lib/box'
 import { IDENTITY } from '../pipeline/types'
 import type { CanvasMode, ComponentParams, ExportOptions, OutlineParams, Transform } from '../pipeline/types'
-import type { PaperSize } from '../template/layout'
 import { CheckboxField, NumberField, RangeField, Segmented, Toggle } from './Fields'
-import Uploader from './Uploader'
-import type { PhotoResult, UiMode } from './types'
+import type { UiMode } from './types'
 
 export interface ComponentRow {
   id: string
@@ -41,32 +39,6 @@ interface ExportStats {
 }
 
 interface DockProps {
-  cvStatus: 'loading' | 'ready' | 'error'
-  cvError: string | null
-
-  paper: PaperSize
-  onPaperChange: (paper: PaperSize) => void
-  onShowTemplate: () => void
-  printerScale: number
-
-  file: File | null
-  onFile: (file: File) => void
-  busy: boolean
-
-  photo: Box<PhotoResult> | null
-  processError: string | null
-  hasRectified: boolean
-  rectifiedMarkersCount: number
-  rectifiedReprojErrorPx: number
-  rectifiedMode: 'markers' | 'manual' | null
-  manualActive: boolean
-  onUseManual: () => void
-  manualPointsCount: number
-  manualDistanceMm: number
-  onManualDistanceChange: (mm: number) => void
-  onApplyManual: () => void
-  manualError: string | null
-
   outlineParams: OutlineParams
   onOutlineParamsChange: (params: OutlineParams) => void
   cleanup: number
@@ -172,28 +144,6 @@ const CANVAS_MODE_OPTIONS: { value: CanvasMode['mode']; label: string }[] = [
 
 export default function Dock(props: DockProps) {
   const {
-    cvStatus,
-    cvError,
-    paper,
-    onPaperChange,
-    onShowTemplate,
-    printerScale,
-    file,
-    onFile,
-    busy,
-    photo,
-    processError,
-    hasRectified,
-    rectifiedMarkersCount,
-    rectifiedReprojErrorPx,
-    rectifiedMode,
-    manualActive,
-    onUseManual,
-    manualPointsCount,
-    manualDistanceMm,
-    onManualDistanceChange,
-    onApplyManual,
-    manualError,
     outlineParams,
     onOutlineParamsChange,
     cleanup,
@@ -244,127 +194,13 @@ export default function Dock(props: DockProps) {
     copyStatus,
   } = props
 
-  const [sampleLoading, setSampleLoading] = useState(false)
-  const [sampleError, setSampleError] = useState<string | null>(null)
-
-  const canPickManual = manualActive && !hasRectified
   const toolRows = tools.value
   const selectedTool = selectedToolId ? (toolRows.find((t) => t.id === selectedToolId) ?? null) : null
   const selectedComponent =
     selectedTool && selectedComponentId ? (selectedTool.components.find((c) => c.id === selectedComponentId) ?? null) : null
 
-  async function handleLoadSample() {
-    setSampleError(null)
-    setSampleLoading(true)
-    try {
-      const res = await fetch('/samples/synthetic-letter.png')
-      if (!res.ok) throw new Error(`Failed to fetch sample photo (${res.status})`)
-      const blob = await res.blob()
-      const sample = new File([blob], 'synthetic-letter.png', { type: blob.type || 'image/png' })
-      onFile(sample)
-    } catch (err) {
-      setSampleError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSampleLoading(false)
-    }
-  }
-
   return (
     <div className="dock">
-      {/* --- Capture ------------------------------------------------- */}
-      <section className="dock-col">
-        <h2 className="section-label">Capture</h2>
-
-        {cvStatus !== 'ready' && (
-          <div className="cv-status">
-            {cvStatus === 'loading' && <span className="pill pill-neutral">Loading OpenCV (13 MB)&hellip;</span>}
-            {cvStatus === 'error' && <span className="pill pill-bad">OpenCV failed to load{cvError ? `: ${cvError}` : ''}</span>}
-          </div>
-        )}
-
-        <div className="capture-row1">
-          <select aria-label="Paper size" className="paper-select" value={paper} onChange={(e) => onPaperChange(e.target.value as PaperSize)}>
-            <option value="letter">Letter</option>
-            <option value="a4">A4</option>
-          </select>
-          <button type="button" className="btn" onClick={onShowTemplate}>
-            Print template
-          </button>
-        </div>
-        {printerScale !== 1 && (
-          <p className="hint muted-small">Printer scale {printerScale.toFixed(4)}&times; &middot; set on the template page</p>
-        )}
-
-        <Uploader file={file} onFile={onFile} disabled={cvStatus !== 'ready' || busy} />
-        <button
-          type="button"
-          className="link-btn sample-link"
-          onClick={handleLoadSample}
-          disabled={cvStatus !== 'ready' || busy || sampleLoading}
-        >
-          {sampleLoading ? 'Loading sample…' : 'Load sample photo'}
-        </button>
-        {sampleError && <p className="pill pill-bad">{sampleError}</p>}
-        {processError && <p className="pill pill-bad">{processError}</p>}
-
-        {!photo && !busy && (
-          <p className="status-line">
-            <span className="status-dot status-dot-muted" />
-            <span className="muted-small">Waiting for a photo</span>
-          </p>
-        )}
-        {busy && (
-          <p className="status-line">
-            <span className="status-dot status-dot-muted" />
-            <span className="muted-small">Processing&hellip;</span>
-          </p>
-        )}
-        {photo && !busy && hasRectified && rectifiedMode === 'markers' && (
-          <p className="status-line">
-            <span className="status-dot status-dot-good" />
-            {rectifiedMarkersCount} markers &middot; {rectifiedReprojErrorPx.toFixed(2)} px
-          </p>
-        )}
-        {photo && !busy && hasRectified && rectifiedMode === 'manual' && (
-          <p className="status-line">
-            <span className="status-dot status-dot-good" />
-            Manual scale set &middot; approximate (no perspective correction)
-          </p>
-        )}
-        {photo && !busy && !hasRectified && !manualActive && (
-          <p className="status-line">
-            <span className="status-dot status-dot-bad" />
-            {photo.value.error ?? 'Marker detection failed'}
-            <button type="button" className="link-btn status-manual-link" onClick={onUseManual}>
-              Use manual scale
-            </button>
-          </p>
-        )}
-
-        {canPickManual && (
-          <div className="manual-scale">
-            <p className="hint">Click two points on the photo that are a known distance apart, then enter that distance.</p>
-            <p className="hint">{manualPointsCount} / 2 points picked</p>
-            <NumberField
-              label="Distance (mm)"
-              value={manualDistanceMm}
-              onChange={onManualDistanceChange}
-              min={1}
-              step={0.1}
-            />
-            <button
-              type="button"
-              className="btn primary"
-              disabled={manualPointsCount < 2 || manualDistanceMm <= 0}
-              onClick={onApplyManual}
-            >
-              Apply
-            </button>
-            {manualError && <p className="pill pill-bad">{manualError}</p>}
-          </div>
-        )}
-      </section>
-
       {/* --- Outline --------------------------------------------------- */}
       <section className="dock-col">
         <h2 className="section-label">Outline</h2>

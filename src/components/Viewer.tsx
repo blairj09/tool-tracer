@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box } from '../lib/box'
 import { pointInPolygon } from '../pipeline/align'
 import type { DetectionResult, Polygon, Pt, Rectified, Tool } from '../pipeline/types'
+import type { PaperSize } from '../template/layout'
 import type { PhotoResult, UiMode } from './types'
 import { colourForIndex } from './palette'
+import { NumberField } from './Fields'
 import OutlineEditor from './OutlineEditor'
+import Uploader from './Uploader'
 import ZoomPane from './ZoomPane'
 
 interface ViewerProps {
@@ -22,8 +25,25 @@ interface ViewerProps {
   editTarget: Box<Polygon> | null
   showMask: boolean
   manualPoints: Pt[]
-  /** Uploaded file's name, shown in the pane title strip while idle. */
-  fileName?: string | null
+
+  // --- Capture (merged into this pane so it isn't a separate dock column) ---
+  cvStatus: 'loading' | 'ready' | 'error'
+  cvError: string | null
+  paper: PaperSize
+  onPaperChange: (paper: PaperSize) => void
+  onShowTemplate: () => void
+  printerScale: number
+  file: File | null
+  onFile: (file: File) => void
+  busy: boolean
+  processError: string | null
+  manualActive: boolean
+  onUseManual: () => void
+  manualDistanceMm: number
+  onManualDistanceChange: (mm: number) => void
+  onApplyManual: () => void
+  manualError: string | null
+
   /** Manual-scale two-point picking, active only before `rectified` exists. */
   onClickPx: (pt: Pt) => void
   onSelectTool: (toolId: string) => void
@@ -122,7 +142,22 @@ export default function Viewer({
   editTarget,
   showMask,
   manualPoints,
-  fileName = null,
+  cvStatus,
+  cvError,
+  paper,
+  onPaperChange,
+  onShowTemplate,
+  printerScale,
+  file,
+  onFile,
+  busy,
+  processError,
+  manualActive,
+  onUseManual,
+  manualDistanceMm,
+  onManualDistanceChange,
+  onApplyManual,
+  manualError,
   onClickPx,
   onSelectTool,
   onSelectComponent,
@@ -141,11 +176,33 @@ export default function Viewer({
   const [overlayWidthPx, setOverlayWidthPx] = useState(0)
   const [zoom, setZoom] = useState(1)
 
+  const [sampleLoading, setSampleLoading] = useState(false)
+  const [sampleError, setSampleError] = useState<string | null>(null)
+
   const rect = rectified?.value ?? null
   const detectionValue = detection?.value ?? null
   const toolsValue = tools.value
   const rawImage = photo?.value.image ?? null
   const activeImage = rect ? rect.image : rawImage
+  const fileName = file?.name ?? null
+  const photoValue = photo?.value ?? null
+  const canPickManual = manualActive && !rect
+
+  async function handleLoadSample() {
+    setSampleError(null)
+    setSampleLoading(true)
+    try {
+      const res = await fetch('/samples/synthetic-letter.png')
+      if (!res.ok) throw new Error(`Failed to fetch sample photo (${res.status})`)
+      const blob = await res.blob()
+      const sample = new File([blob], 'synthetic-letter.png', { type: blob.type || 'image/png' })
+      onFile(sample)
+    } catch (err) {
+      setSampleError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSampleLoading(false)
+    }
+  }
 
   // Draw the base image (+ manual-mode crosshairs, drawn directly in the
   // canvas's own pixel space so they always line up with the image).
@@ -329,6 +386,103 @@ export default function Viewer({
           <span className="pane-title-text">Photo{fileName ? ` · ${fileName}` : ''}</span>
         )}
       </div>
+
+      {mode === 'select' && (
+        <div className="capture-bar">
+          {cvStatus !== 'ready' && (
+            <span className={`pill ${cvStatus === 'error' ? 'pill-bad' : 'pill-neutral'}`}>
+              {cvStatus === 'loading' ? 'Loading OpenCV (13 MB)…' : `OpenCV failed to load${cvError ? `: ${cvError}` : ''}`}
+            </span>
+          )}
+
+          <div className="capture-controls">
+            <select
+              aria-label="Paper size"
+              className="paper-select"
+              value={paper}
+              onChange={(e) => onPaperChange(e.target.value as PaperSize)}
+            >
+              <option value="letter">Letter</option>
+              <option value="a4">A4</option>
+            </select>
+            <button type="button" className="btn" onClick={onShowTemplate}>
+              Print template
+            </button>
+          </div>
+
+          <Uploader file={file} onFile={onFile} disabled={cvStatus !== 'ready' || busy} />
+
+          <div className="capture-side">
+            <button
+              type="button"
+              className="link-btn sample-link"
+              onClick={handleLoadSample}
+              disabled={cvStatus !== 'ready' || busy || sampleLoading}
+            >
+              {sampleLoading ? 'Loading sample…' : 'Load sample photo'}
+            </button>
+
+            {!photoValue && !busy && (
+              <p className="status-line">
+                <span className="status-dot status-dot-muted" />
+                <span className="muted-small">Waiting for a photo</span>
+              </p>
+            )}
+            {busy && (
+              <p className="status-line">
+                <span className="status-dot status-dot-muted" />
+                <span className="muted-small">Processing&hellip;</span>
+              </p>
+            )}
+            {photoValue && !busy && rect && rect.mode === 'markers' && (
+              <p className="status-line">
+                <span className="status-dot status-dot-good" />
+                {rect.markers.length} markers &middot; {rect.reprojErrorPx.toFixed(2)} px
+              </p>
+            )}
+            {photoValue && !busy && rect && rect.mode === 'manual' && (
+              <p className="status-line">
+                <span className="status-dot status-dot-good" />
+                Manual scale set &middot; approximate (no perspective correction)
+              </p>
+            )}
+            {photoValue && !busy && !rect && !manualActive && (
+              <p className="status-line">
+                <span className="status-dot status-dot-bad" />
+                {photoValue.error ?? 'Marker detection failed'}
+                <button type="button" className="link-btn status-manual-link" onClick={onUseManual}>
+                  Use manual scale
+                </button>
+              </p>
+            )}
+          </div>
+
+          {printerScale !== 1 && (
+            <p className="hint muted-small capture-bar-note">
+              Printer scale {printerScale.toFixed(4)}&times; &middot; set on the template page
+            </p>
+          )}
+          {sampleError && <p className="pill pill-bad">{sampleError}</p>}
+          {processError && <p className="pill pill-bad">{processError}</p>}
+
+          {canPickManual && (
+            <div className="manual-scale manual-scale-bar">
+              <p className="hint">Click two points on the photo that are a known distance apart, then enter that distance.</p>
+              <p className="hint">{manualPoints.length} / 2 points picked</p>
+              <NumberField label="Distance (mm)" value={manualDistanceMm} onChange={onManualDistanceChange} min={1} step={0.1} />
+              <button
+                type="button"
+                className="btn primary"
+                disabled={manualPoints.length < 2 || manualDistanceMm <= 0}
+                onClick={onApplyManual}
+              >
+                Apply
+              </button>
+              {manualError && <p className="pill pill-bad">{manualError}</p>}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="pane-body">
         {!activeImage && (
