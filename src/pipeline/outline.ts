@@ -130,10 +130,156 @@ function segment(cv: CV, rectified: Rectified, params: OutlineParams): { binary:
   })
 }
 
+// Fraction of a blob's own peak distance-to-background used to seed the
+// watershed split below — see splitTouchingBlob for why this is safe for
+// ordinary single tools.
+const WATERSHED_SEED_FRACTION = 0.5
+
+/**
+ * A single connected-component contour can actually be two or more tools
+ * that touch, or nearly touch, on the template: thresholding and the
+ * blur/close cleanup only need a very thin bridge to fuse adjacent tools
+ * into one shape. This looks for a real pinch point using a
+ * marker-controlled watershed seeded from the local maxima of the
+ * distance-to-background transform, and splits there when it finds one.
+ *
+ * An ordinary single tool — even elongated or curved — has one connected
+ * "core" region in that transform (its medial axis is one connected
+ * ridge), so it always comes back as `[contour]`, pixel-identical to the
+ * input. A split only happens when the shape actually pinches down to a
+ * narrow waist between two separate wider lobes, which is exactly what
+ * two touching tools look like and what a single tool's own silhouette
+ * essentially never does.
+ *
+ * Takes ownership of `contour`: it is deleted only on the path that
+ * returns different Mats; every early-return path hands the same,
+ * untouched `contour` back for the caller to treat normally. `binary` is
+ * read-only here (only used for its size) and never mutated.
+ */
+function splitTouchingBlob(cv: CV, binary: Mat, contour: Mat): Mat[] {
+  const rect = cv.boundingRect(contour)
+  const pad = 3
+  const x0 = Math.max(0, rect.x - pad)
+  const y0 = Math.max(0, rect.y - pad)
+  const x1 = Math.min(binary.cols, rect.x + rect.width + pad)
+  const y1 = Math.min(binary.rows, rect.y + rect.height + pad)
+  const w = x1 - x0
+  const h = y1 - y0
+  if (w <= 0 || h <= 0) return [contour]
+
+  return withMats((track) => {
+    // Rasterize just this one contour into an isolated local mask — we
+    // never read the shared `binary` mat's pixels directly, so a
+    // neighbouring blob whose bounding box happens to overlap this crop
+    // can't leak into the shape we're trying to split.
+    const local = track(new cv.Mat(h, w, cv.CV_8UC1, new cv.Scalar(0)))
+    const shifted: number[] = []
+    for (let i = 0; i < contour.rows; i++) {
+      shifted.push(contour.data32S[i * 2] - x0, contour.data32S[i * 2 + 1] - y0)
+    }
+    const shiftedMat = track(cv.matFromArray(contour.rows, 1, cv.CV_32SC2, shifted))
+    const shiftedVec = track(new cv.MatVector())
+    shiftedVec.push_back(shiftedMat)
+    cv.drawContours(local, shiftedVec, 0, new cv.Scalar(255), -1)
+
+    const dist = track(new cv.Mat())
+    cv.distanceTransform(local, dist, cv.DIST_L2, 5)
+    // @techstark/opencv-js's generated types model minMaxLoc after the C++
+    // out-parameter overloads, which don't match its actual JS surface
+    // (same class of mismatch as the hand-written ArUco shim in
+    // cv-aruco.d.ts): at runtime it takes just `(src, mask?)` and returns
+    // `{ minVal, maxVal, minLoc, maxLoc }` directly.
+    const minMaxLoc = cv.minMaxLoc as unknown as (src: Mat) => { minVal: number; maxVal: number }
+    const { maxVal } = minMaxLoc(dist)
+    if (!(maxVal > 0)) return [contour]
+
+    const sureFg = track(new cv.Mat())
+    cv.threshold(dist, sureFg, WATERSHED_SEED_FRACTION * maxVal, 255, cv.THRESH_BINARY)
+    sureFg.convertTo(sureFg, cv.CV_8U)
+
+    const labels = track(new cv.Mat())
+    const nLabels = cv.connectedComponents(sureFg, labels, 8, cv.CV_32S)
+    const nSeeds = nLabels - 1
+    if (nSeeds <= 1) return [contour]
+
+    // Marker-controlled watershed. After the shift below, labels run
+    // 2..nSeeds+1 (one core per real tool), 1 marks definite background
+    // (outside the shape, grown by a couple of px), and the rest — the
+    // ambiguous band between each seed and the shape's true edge, which
+    // includes the whole pinch/waist — is left at 0 for watershed to
+    // resolve by flooding outward from the seeds.
+    const sureBg = track(new cv.Mat())
+    const bgKernel = track(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)))
+    cv.dilate(local, sureBg, bgKernel)
+
+    const markers = track(new cv.Mat())
+    labels.convertTo(markers, cv.CV_32S, 1, 1)
+    for (let i = 0; i < w * h; i++) {
+      if (sureBg.data[i] === 0) markers.data32S[i] = 1
+      else if (sureFg.data[i] === 0) markers.data32S[i] = 0
+    }
+
+    const colorLocal = track(new cv.Mat())
+    cv.cvtColor(local, colorLocal, cv.COLOR_GRAY2BGR)
+    cv.watershed(colorLocal, markers)
+
+    const results: Mat[] = []
+    for (let label = 2; label <= nSeeds + 1; label++) {
+      // Intersect with `local` so a split region can never extend past
+      // the original shape's true boundary — only the interior pinch
+      // point is actually in question here.
+      const objMask = new cv.Mat(h, w, cv.CV_8UC1, new cv.Scalar(0))
+      for (let i = 0; i < w * h; i++) {
+        if (markers.data32S[i] === label && local.data[i] !== 0) objMask.data[i] = 255
+      }
+      const objContours = new cv.MatVector()
+      const objHierarchy = new cv.Mat()
+      cv.findContours(objMask, objContours, objHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+      let best: Mat | null = null
+      let bestArea = 0
+      for (let i = 0; i < objContours.size(); i++) {
+        const oc = objContours.get(i)
+        const a = cv.contourArea(oc)
+        if (a > bestArea) {
+          bestArea = a
+          if (best) best.delete()
+          best = oc
+        } else {
+          oc.delete()
+        }
+      }
+      objMask.delete()
+      objHierarchy.delete()
+      objContours.delete()
+      if (best && bestArea > 0) {
+        const pts: number[] = []
+        for (let i = 0; i < best.rows; i++) {
+          pts.push(best.data32S[i * 2] + x0, best.data32S[i * 2 + 1] + y0)
+        }
+        best.delete()
+        results.push(cv.matFromArray(pts.length / 2, 1, cv.CV_32SC2, pts))
+      }
+    }
+
+    if (results.length < 2) {
+      // Watershed degenerated (e.g. a seed too small to survive its own
+      // region) — fall back to the untouched original rather than losing
+      // the blob or keeping only a fragment of it.
+      results.forEach((m) => m.delete())
+      return [contour]
+    }
+
+    contour.delete()
+    return results
+  })
+}
+
 /**
  * List every top-level (parent === -1) contour at or above
- * `max(5, minAreaMm2 / 10)` mm², sorted by area descending. `params.pick`
- * is ignored here (selection happens in {@link extractOutline}).
+ * `max(5, minAreaMm2 / 10)` mm², sorted by area descending, splitting any
+ * that turn out to be several touching tools fused together (see
+ * {@link splitTouchingBlob}). `params.pick` is ignored here (selection
+ * happens in {@link extractOutline}).
  */
 export function detectBlobs(cv: CV, rectified: Rectified, params: OutlineParams): DetectionResult {
   const { pxPerMm } = rectified
@@ -159,35 +305,44 @@ export function detectBlobs(cv: CV, rectified: Rectified, params: OutlineParams)
     const minAreaMm2 = Math.max(5, params.minAreaMm2 / 10)
     const minAreaPx = minAreaMm2 * pxPerMm * pxPerMm
 
-    const blobs: Blob[] = []
+    const rawContours: Mat[] = []
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i)
       const isHole = hierarchy.data32S[i * 4 + 3] !== -1
       if (!isHole && cv.contourArea(c) >= minAreaPx) {
-        const approx = track(new cv.Mat())
-        cv.approxPolyDP(c, approx, params.simplifyMm * pxPerMm, true)
-        const areaMm2 = cv.contourArea(approx) / (pxPerMm * pxPerMm)
-
-        const polygon: Polygon = []
-        for (let r = 0; r < approx.rows; r++) {
-          polygon.push({
-            x: approx.data32S[r * 2] / pxPerMm,
-            y: approx.data32S[r * 2 + 1] / pxPerMm,
-          })
+        for (const sc of splitTouchingBlob(cv, binary, c)) {
+          rawContours.push(track(sc))
         }
-
-        const xs = polygon.map((p) => p.x)
-        const ys = polygon.map((p) => p.y)
-        const bboxOut = {
-          x: Math.min(...xs),
-          y: Math.min(...ys),
-          w: Math.max(...xs) - Math.min(...xs),
-          h: Math.max(...ys) - Math.min(...ys),
-        }
-
-        blobs.push({ polygon, bbox: bboxOut, areaMm2, centroid: centroid(polygon) })
+      } else {
+        c.delete()
       }
-      c.delete()
+    }
+
+    const blobs: Blob[] = []
+    for (const rc of rawContours) {
+      const approx = track(new cv.Mat())
+      cv.approxPolyDP(rc, approx, params.simplifyMm * pxPerMm, true)
+      if (cv.contourArea(approx) < minAreaPx) continue
+
+      const areaMm2 = cv.contourArea(approx) / (pxPerMm * pxPerMm)
+      const polygon: Polygon = []
+      for (let r = 0; r < approx.rows; r++) {
+        polygon.push({
+          x: approx.data32S[r * 2] / pxPerMm,
+          y: approx.data32S[r * 2 + 1] / pxPerMm,
+        })
+      }
+
+      const xs = polygon.map((p) => p.x)
+      const ys = polygon.map((p) => p.y)
+      const bboxOut = {
+        x: Math.min(...xs),
+        y: Math.min(...ys),
+        w: Math.max(...xs) - Math.min(...xs),
+        h: Math.max(...ys) - Math.min(...ys),
+      }
+
+      blobs.push({ polygon, bbox: bboxOut, areaMm2, centroid: centroid(polygon) })
     }
 
     blobs.sort((a, b) => b.areaMm2 - a.areaMm2)
