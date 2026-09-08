@@ -192,7 +192,7 @@ export default function Viewer({
     setSampleError(null)
     setSampleLoading(true)
     try {
-      const res = await fetch('/samples/synthetic-letter.png')
+      const res = await fetch('./samples/synthetic-letter.png')
       if (!res.ok) throw new Error(`Failed to fetch sample photo (${res.status})`)
       const blob = await res.blob()
       const sample = new File([blob], 'synthetic-letter.png', { type: blob.type || 'image/png' })

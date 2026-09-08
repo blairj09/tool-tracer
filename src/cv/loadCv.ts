@@ -1,4 +1,4 @@
-// Loads OpenCV.js (~13 MB) at runtime by injecting a <script src="/opencv.js">
+// Loads OpenCV.js (~13 MB) at runtime by injecting a relative script URL.
 // tag (the file is copied into public/ by scripts/copy-opencv.mjs, see
 // package.json's "postinstall"). The result is memoized so the script is
 // only injected once no matter how many times loadCv() is called.
@@ -27,7 +27,7 @@ declare global {
 }
 
 const SCRIPT_ID = 'tooltrace-opencv-script'
-const SCRIPT_SRC = '/opencv.js'
+const SCRIPT_SRC = './opencv.js'
 
 let cvPromise: Promise<CV> | null = null
 
